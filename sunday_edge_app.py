@@ -32,7 +32,11 @@ import nfl_data_py as nfl
 # Constants
 # ----------------------------------------------------------------------
 RIDGE_ALPHA   = 8.0
-CARRYOVER     = 0.35
+# Year-over-year persistence of NFL team strength (~0.5-0.6 empirically).
+# Applied ONLY where there is no in-season data. This scales last year's
+# ratings toward average; too low and every game looks like a pick'em,
+# which makes the model take underdogs indiscriminately in early weeks.
+CARRYOVER     = 0.65
 WINDOW_GAMES  = 320
 
 # Residual SDs measured on 4,254 games, 2007-2025. These convert a point
@@ -192,9 +196,11 @@ def build_ratings(sched, season, week):
         blend = {t: w * r_cur.get(t, 0.0) + (1 - w) * CARRYOVER * r_all.get(t, 0.0)
                  for t in teams}
     else:
+        w = 0.0
         blend = {t: CARRYOVER * r_all.get(t, 0.0) for t in teams}
     return {"margin": blend, "hfa": hfa, "total": t_all, "tbase": tbase,
-            "n_prior": len(prior)}
+            "n_prior": len(prior), "in_season_weight": w,
+            "n_in_season": len(in_season), "prior_ratings": r_all}
 
 
 def ev_from_prob(p, odds=-110):
@@ -384,7 +390,7 @@ st.warning(
     f"you a real answer as the record accumulates."
 )
 
-tab_slate, tab_tracker = st.tabs(["Slate", "Tracker"])
+tab_slate, tab_game, tab_tracker = st.tabs(["Slate", "Game", "Tracker"])
 
 sched_all = None
 try:
@@ -426,7 +432,10 @@ with tab_slate:
             show["cover_prob"] = show["cover_prob"].map(lambda v: f"{v:.1%}")
             show["expected_value"] = show["expected_value"].map(lambda v: f"{v:+.2%}")
             show["edge_pts"] = show["edge_pts"].map(lambda v: f"{v:+.2f}")
-            show["model_line"] = show["model_line"].map(lambda v: f"{v:+.1f}")
+            show["model_line"] = [
+                f"{v:.1f}" if m == "TOTAL" else f"{v:+.1f}"
+                for v, m in zip(sub["model_line"], sub["market_type"])
+            ]
             show.columns = ["Game", "Pick", "Market", "Line", "Model", "Edge",
                             "Cover", "EV"]
             st.dataframe(show, hide_index=True, use_container_width=True)
@@ -434,6 +443,95 @@ with tab_slate:
         if st.button("Freeze this card", type="primary"):
             tr, n = freeze(card, load_tracker())
             st.success(f"Froze {n} new bets." if n else "Nothing new to freeze.")
+
+with tab_game:
+    st.write("Every number behind one game, so you can see where the "
+             "model's line comes from.")
+    gs = sorted(sched_all["season"].unique())
+    d1, d2 = st.columns(2)
+    g_season = d1.selectbox("Season", gs, index=len(gs) - 1, key="g_season")
+    g_weeks = sorted(sched_all[sched_all["season"] == g_season]["week"].unique())
+    g_week = d2.selectbox("Week", g_weeks, index=0, key="g_week")
+
+    wk = sched_all[(sched_all["season"] == g_season)
+                   & (sched_all["week"] == g_week)].copy()
+    wk["label"] = wk["away_team"] + " @ " + wk["home_team"]
+    pick = st.selectbox("Game", wk["label"].tolist())
+    row = wk[wk["label"] == pick].iloc[0]
+
+    rt_g = build_ratings(sched_all, g_season, g_week)
+    if rt_g is None:
+        st.info("Not enough completed games to build ratings yet.")
+    else:
+        h, a = row["home_team"], row["away_team"]
+        rh, ra = rt_g["margin"].get(h, 0.0), rt_g["margin"].get(a, 0.0)
+        hfa = rt_g["hfa"]
+        raw = rh - ra + hfa
+
+        st.subheader("Power ratings")
+        r1, r2, r3 = st.columns(3)
+        r1.metric(f"{h} (home)", f"{rh:+.2f}")
+        r2.metric(f"{a} (away)", f"{ra:+.2f}")
+        r3.metric("Home field", f"{hfa:+.2f}")
+        st.caption(
+            f"Fit on {rt_g['n_prior']:,} prior games. In-season games so far: "
+            f"{rt_g['n_in_season']}, carrying "
+            f"{rt_g['in_season_weight']:.0%} weight — the rest comes from "
+            f"earlier seasons scaled by {CARRYOVER:.2f}."
+        )
+
+        st.subheader("Spread")
+        if pd.notna(row.get("spread_line")):
+            mkt = sign * float(row["spread_line"])
+            fair = mkt + MODEL_WEIGHT * (raw - mkt)
+            edge = fair - mkt
+            side = "HOME" if edge > 0 else "AWAY"
+            p = norm_cdf(abs(edge) / SD_MARGIN)
+            st.code(
+                f"model line      {rh:+.2f} - ({ra:+.2f}) + {hfa:+.2f} "
+                f"= {raw:+.2f}\n"
+                f"market line     {mkt:+.2f}\n"
+                f"disagreement    {raw - mkt:+.2f} pts\n"
+                f"blended fair    {mkt:+.2f} + {MODEL_WEIGHT} x "
+                f"({raw - mkt:+.2f}) = {fair:+.2f}\n"
+                f"edge            {edge:+.2f} pts\n"
+                f"cover prob      normal({abs(edge):.2f} / {SD_MARGIN}) "
+                f"= {p:.1%}\n"
+                f"EV at -110      {ev_from_prob(p):+.2%}\n"
+                f"lean            {h if side == 'HOME' else a}",
+                language=None,
+            )
+        else:
+            st.info("No spread posted for this game.")
+
+        st.subheader("Total")
+        if rt_g["total"] and pd.notna(row.get("total_line")):
+            th = rt_g["total"].get(h, 0.0); ta = rt_g["total"].get(a, 0.0)
+            raw_t = th + ta + rt_g["tbase"]
+            mt = float(row["total_line"])
+            fair_t = mt + MODEL_WEIGHT * (raw_t - mt)
+            edge_t = fair_t - mt
+            p = norm_cdf(abs(edge_t) / SD_TOTAL)
+            st.code(
+                f"model total     {th:.2f} + {ta:.2f} + {rt_g['tbase']:.2f} "
+                f"= {raw_t:.2f}\n"
+                f"market total    {mt:.2f}\n"
+                f"disagreement    {raw_t - mt:+.2f} pts\n"
+                f"blended fair    {fair_t:.2f}\n"
+                f"edge            {edge_t:+.2f} pts\n"
+                f"cover prob      {p:.1%}\n"
+                f"EV at -110      {ev_from_prob(p):+.2%}\n"
+                f"lean            {'Over' if edge_t > 0 else 'Under'} {mt:g}",
+                language=None,
+            )
+        else:
+            st.info("No total posted for this game.")
+
+        if pd.notna(row.get("home_score")):
+            st.caption(
+                f"Final: {a} {row['away_score']:.0f} - "
+                f"{h} {row['home_score']:.0f}"
+            )
 
 with tab_tracker:
     tr = load_tracker()
