@@ -26,7 +26,31 @@ import pandas as pd
 import streamlit as st
 from sklearn.linear_model import Ridge
 
+import requests
+
 import nfl_data_py as nfl
+
+# Odds API full names -> nflverse abbreviations.
+ODDS_TEAM = {
+    "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL",
+    "Baltimore Ravens": "BAL", "Buffalo Bills": "BUF",
+    "Carolina Panthers": "CAR", "Chicago Bears": "CHI",
+    "Cincinnati Bengals": "CIN", "Cleveland Browns": "CLE",
+    "Dallas Cowboys": "DAL", "Denver Broncos": "DEN",
+    "Detroit Lions": "DET", "Green Bay Packers": "GB",
+    "Houston Texans": "HOU", "Indianapolis Colts": "IND",
+    "Jacksonville Jaguars": "JAX", "Kansas City Chiefs": "KC",
+    "Las Vegas Raiders": "LV", "Los Angeles Chargers": "LAC",
+    "Los Angeles Rams": "LA", "Miami Dolphins": "MIA",
+    "Minnesota Vikings": "MIN", "New England Patriots": "NE",
+    "New Orleans Saints": "NO", "New York Giants": "NYG",
+    "New York Jets": "NYJ", "Philadelphia Eagles": "PHI",
+    "Pittsburgh Steelers": "PIT", "San Francisco 49ers": "SF",
+    "Seattle Seahawks": "SEA", "Tampa Bay Buccaneers": "TB",
+    "Tennessee Titans": "TEN", "Washington Commanders": "WAS",
+}
+# nflverse has used both LA and LAR for the Rams depending on version.
+ODDS_ALT = {"LA": "LAR", "LAR": "LA"}
 
 # ----------------------------------------------------------------------
 # Constants
@@ -134,8 +158,88 @@ def save_tracker(df):
 # ----------------------------------------------------------------------
 # Data
 # ----------------------------------------------------------------------
+@st.cache_data(show_spinner=False, ttl=60 * 10)
+def fetch_live_odds(_bust=0):
+    """
+    Live spreads and totals from every US book, kept as raw offers so the
+    card can price each one. Returns (offers, credits_left, error).
+    """
+    key = None
+    try:
+        key = st.secrets["odds_api_key"]
+    except Exception:
+        return {}, None, "no key"
+    try:
+        r = requests.get(
+            "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds",
+            params={"apiKey": key, "regions": "us",
+                    "markets": "spreads,totals", "oddsFormat": "american"},
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return {}, None, f"HTTP {r.status_code}: {r.text[:120]}"
+        left = r.headers.get("x-requests-remaining")
+        offers = {}
+        for ev in r.json():
+            h = ODDS_TEAM.get(ev.get("home_team"))
+            a = ODDS_TEAM.get(ev.get("away_team"))
+            if not h or not a:
+                continue
+            spreads, totals = [], []
+            for bk in ev.get("bookmakers", []):
+                book = bk.get("title") or bk.get("key")
+                for mk in bk.get("markets", []):
+                    for o in mk.get("outcomes", []):
+                        pt, pr = o.get("point"), o.get("price")
+                        if pt is None or pr is None:
+                            continue
+                        if mk.get("key") == "spreads":
+                            side = ODDS_TEAM.get(o.get("name"))
+                            if side in (h, a):
+                                spreads.append((side, float(pt), float(pr), book))
+                        elif mk.get("key") == "totals":
+                            nm = str(o.get("name", "")).upper()
+                            if nm in ("OVER", "UNDER"):
+                                totals.append((nm, float(pt), float(pr), book))
+            offers[(a, h)] = {"spreads": spreads, "totals": totals,
+                              "commence": ev.get("commence_time")}
+        st.session_state["odds_pulled_at"] = datetime.now(timezone.utc)
+        return offers, left, None
+    except Exception as e:
+        return {}, None, str(e)
+
+
+def lookup_offers(offers, away, home):
+    for a, h in ((away, home), (ODDS_ALT.get(away, away), home),
+                 (away, ODDS_ALT.get(home, home))):
+        if (a, h) in offers:
+            return offers[(a, h)]
+    return None
+
+
+def best_offer(cands, fair, sd):
+    """
+    Line shopping done properly: price every book's actual point AND price,
+    then take the highest EV. Best number and best price are often at
+    different books, so picking on either one alone leaves money behind.
+    """
+    best = None
+    for side, thresh, price, book in cands:
+        edge = (fair - thresh) if side == "OVER_LIKE" else (thresh - fair)
+        p = norm_cdf(edge / sd)
+        e = ev_from_prob(p, price)
+        if e is None:
+            continue
+        if best is None or e > best["ev"]:
+            best = {"ev": e, "cover": p, "edge": edge, "point": thresh,
+                    "price": price, "book": book}
+    return best
+
+
 @st.cache_data(show_spinner=False, ttl=60 * 30)
-def load_schedules(seasons):
+def load_schedules(seasons, _bust=0):
+    """_bust is unused, but changing it forces a fresh pull past the cache."""
+    st.session_state["lines_pulled_at"] = datetime.now(timezone.utc)
     df = nfl.import_schedules(list(seasons))
     keep = ["game_id", "season", "week", "gameday", "gametime",
             "home_team", "away_team", "home_score", "away_score",
@@ -191,14 +295,22 @@ def build_ratings(sched, season, week):
     t_all, tbase = fit_ratings(recent, teams, "total_points", symmetric=True)
 
     r_cur, _ = fit_ratings(in_season, teams, "home_margin")
-    if r_cur is not None:
-        w = min(1.0, len(in_season) / 160.0)
-        blend = {t: w * r_cur.get(t, 0.0) + (1 - w) * CARRYOVER * r_all.get(t, 0.0)
-                 for t in teams}
-    else:
-        w = 0.0
-        blend = {t: CARRYOVER * r_all.get(t, 0.0) for t in teams}
-    return {"margin": blend, "hfa": hfa, "total": t_all, "tbase": tbase,
+    t_cur, _ = fit_ratings(in_season, teams, "total_points", symmetric=True)
+    w = min(1.0, len(in_season) / 160.0) if r_cur is not None else 0.0
+
+    def _blend(cur, allr):
+        """Same treatment for both markets. Team ratings are deviations
+        from league average, so carryover scales them toward average;
+        the constant (home field, base total) is not scaled."""
+        if allr is None:
+            return None
+        if cur is None:
+            return {t: CARRYOVER * allr.get(t, 0.0) for t in teams}
+        return {t: w * cur.get(t, 0.0) + (1 - w) * CARRYOVER * allr.get(t, 0.0)
+                for t in teams}
+
+    return {"margin": _blend(r_cur, r_all), "hfa": hfa,
+            "total": _blend(t_cur, t_all), "tbase": tbase,
             "n_prior": len(prior), "in_season_weight": w,
             "n_in_season": len(in_season), "prior_ratings": r_all}
 
@@ -218,7 +330,7 @@ def norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
-def build_card(sched, season, week, sign):
+def build_card(sched, season, week, sign, offers=None):
     rt = build_ratings(sched, season, week)
     if rt is None:
         return pd.DataFrame(), None
@@ -232,8 +344,39 @@ def build_card(sched, season, week, sign):
 
         raw_model = rt["margin"][h] - rt["margin"][a] + rt["hfa"]
         mkt = sign * g["spread_line"] if pd.notna(g.get("spread_line")) else None
+        live = lookup_offers(offers, a, h) if offers else None
 
-        # SPREAD
+        # SPREAD — live books first, nflverse as fallback
+        if live and live["spreads"]:
+            pts = [-p for t, p, _, _ in live["spreads"] if t == h]
+            if pts:
+                mkt = float(np.median(pts))
+            fair = mkt + MODEL_WEIGHT * (raw_model - mkt)
+            # Home side covers above -point; away side covers below +point.
+            cands = [("OVER_LIKE" if t == h else "UNDER_LIKE",
+                      (-p if t == h else p), pr, bk)
+                     for t, p, pr, bk in live["spreads"]]
+            b = best_offer(cands, fair, SD_MARGIN)
+            if b:
+                side = "HOME" if b["edge"] > 0 or b["point"] < 0 else "AWAY"
+                # Recover which team the winning offer belongs to
+                side = "HOME" if any(t == h and -p == b["point"] and pr == b["price"]
+                                     for t, p, pr, bk in live["spreads"]) else "AWAY"
+                team = h if side == "HOME" else a
+                shown = -b["point"] if side == "HOME" else b["point"]
+                rows.append({
+                    "game_id": g["game_id"], "season": season, "week": week,
+                    "kickoff": f"{g.get('gameday','')} {g.get('gametime','')}".strip(),
+                    "matchup": f"{a} @ {h}", "home_team": h, "away_team": a,
+                    "market_type": "SPREAD", "pick_side": side,
+                    "pick_label": f"{team} {shown:+g} ({b['price']:+.0f}) "
+                                  f"@ {b['book']}",
+                    "bet_line": float(b["point"]), "model_line": float(raw_model),
+                    "edge_pts": float(b["edge"]), "cover_prob": b["cover"],
+                    "expected_value": b["ev"], "odds": b["price"],
+                })
+                mkt = None  # handled
+
         if mkt is not None:
             # Blend toward the market at the weight the backtest earned.
             # Betting the raw model line means betting a number the data
@@ -255,7 +398,33 @@ def build_card(sched, season, week, sign):
                 "expected_value": ev_from_prob(p), "odds": -110,
             })
 
-        # TOTAL
+        # TOTAL — live books first
+        if live and live["totals"] and rt["total"]:
+            raw_total = rt["total"].get(h, 0.0) + rt["total"].get(a, 0.0) + rt["tbase"]
+            pts = [p for _, p, _, _ in live["totals"]]
+            mt = float(np.median(pts))
+            fair_t = mt + MODEL_WEIGHT * (raw_total - mt)
+            cands = [("OVER_LIKE" if nm == "OVER" else "UNDER_LIKE", p, pr, bk)
+                     for nm, p, pr, bk in live["totals"]]
+            b = best_offer(cands, fair_t, SD_TOTAL)
+            if b:
+                side = "OVER" if b["edge"] > 0 else "UNDER"
+                side = next((nm for nm, p, pr, bk in live["totals"]
+                             if p == b["point"] and pr == b["price"]), side)
+                rows.append({
+                    "game_id": g["game_id"], "season": season, "week": week,
+                    "kickoff": f"{g.get('gameday','')} {g.get('gametime','')}".strip(),
+                    "matchup": f"{a} @ {h}", "home_team": h, "away_team": a,
+                    "market_type": "TOTAL", "pick_side": side,
+                    "pick_label": f"{side.title()} {b['point']:g} "
+                                  f"({b['price']:+.0f}) @ {b['book']}",
+                    "bet_line": float(b["point"]), "model_line": float(raw_total),
+                    "edge_pts": float(b["edge"]), "cover_prob": b["cover"],
+                    "expected_value": b["ev"], "odds": b["price"],
+                })
+                continue
+
+        # TOTAL fallback
         if rt["total"] and pd.notna(g.get("total_line")):
             raw_total = rt["total"].get(h, 0.0) + rt["total"].get(a, 0.0) + rt["tbase"]
             mt = float(g["total_line"])
@@ -392,13 +561,39 @@ st.warning(
 
 tab_slate, tab_game, tab_tracker = st.tabs(["Slate", "Game", "Tracker"])
 
+c_ref, c_stamp = st.columns([1, 3])
+if c_ref.button("Refresh lines", use_container_width=True):
+    st.session_state["bust"] = st.session_state.get("bust", 0) + 1
+
 sched_all = None
 try:
     this_season = datetime.now().year
-    sched_all = load_schedules(range(this_season - 3, this_season + 1))
+    sched_all = load_schedules(range(this_season - 3, this_season + 1),
+                               _bust=st.session_state.get("bust", 0))
 except Exception as e:
     st.error(f"Could not load NFL schedules: {e}")
     st.stop()
+
+live_offers, credits_left, odds_err = fetch_live_odds(
+    _bust=st.session_state.get("bust", 0))
+if odds_err == "no key":
+    st.info("Add `odds_api_key` to Streamlit secrets for live multi-book "
+            "lines and line shopping. Using nflverse lines for now.")
+elif odds_err:
+    st.warning(f"Live odds unavailable ({odds_err}). Using nflverse lines.")
+elif live_offers:
+    st.success(
+        f"Live odds for {len(live_offers)} games across US books"
+        + (f" · {credits_left} API credits left" if credits_left else "")
+    )
+
+_pulled = st.session_state.get("lines_pulled_at")
+if _pulled:
+    _age = (datetime.now(timezone.utc) - _pulled).total_seconds() / 60
+    c_stamp.caption(
+        f"Lines pulled {int(_age)} min ago from nflverse. These update "
+        f"periodically, not tick-by-tick — check your book before betting."
+    )
 
 sign = line_sign(sched_all)
 
@@ -409,7 +604,7 @@ with tab_slate:
     weeks = sorted(sched_all[sched_all["season"] == season]["week"].unique())
     week = c2.selectbox("Week", weeks, index=min(len(weeks) - 1, 0))
 
-    card, rt = build_card(sched_all, season, week, sign)
+    card, rt = build_card(sched_all, season, week, sign, offers=live_offers)
 
     if rt is None:
         st.info("Not enough completed games yet to build ratings.")
