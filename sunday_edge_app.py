@@ -17,6 +17,7 @@ record accumulate against a stated prior rather than hide it.
 import warnings
 warnings.filterwarnings("ignore")
 
+import html as _html
 import json
 import math
 from datetime import datetime, timezone
@@ -546,6 +547,61 @@ def summarize(df):
 
 
 # ----------------------------------------------------------------------
+# Card rendering
+# ----------------------------------------------------------------------
+CARD_CSS = """
+<style>
+.se-card{border:1px solid rgba(128,128,128,.25);border-radius:14px;
+  padding:14px 16px;margin-bottom:10px}
+.se-card.off{border-left:5px solid #16a34a}
+.se-card.watch{border-left:5px solid #d97706;opacity:.85}
+.se-top{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.se-rank{font-weight:700;font-size:.8rem;opacity:.55;min-width:16px}
+.se-chip{font-size:.65rem;letter-spacing:.08em;font-weight:700;opacity:.6;
+  border:1px solid rgba(128,128,128,.35);border-radius:99px;padding:2px 8px}
+.se-badge{margin-left:auto;font-size:.65rem;font-weight:800;letter-spacing:.06em;
+  border-radius:99px;padding:3px 10px}
+.se-badge.best{background:#16a34a;color:#fff}
+.se-badge.bet{border:1px solid #16a34a;color:#16a34a}
+.se-badge.watch{border:1px solid #d97706;color:#d97706}
+.se-pick{font-size:1.45rem;font-weight:800;line-height:1.15;margin:2px 0}
+.se-sub{font-size:.82rem;opacity:.6;margin-bottom:10px}
+.se-m{display:flex;gap:14px;flex-wrap:wrap}
+.se-m div{display:flex;flex-direction:column}
+.se-m b{font-size:.95rem;font-weight:700}
+.se-m span{font-size:.6rem;letter-spacing:.08em;opacity:.5;font-weight:600}
+.se-ev-pos{color:#16a34a}.se-ev-neg{color:#dc2626}
+</style>
+"""
+
+
+def render_card(r, rank, badge):
+    cls = "off" if badge in ("BEST BET", "BET") else "watch"
+    bcls = {"BEST BET": "best", "BET": "bet"}.get(badge, "watch")
+    ev = float(r["expected_value"])
+    evc = "se-ev-pos" if ev > 0 else "se-ev-neg"
+    e = _html.escape
+    st.markdown(f"""
+<div class="se-card {cls}">
+  <div class="se-top">
+    <span class="se-rank">{rank}</span>
+    <span class="se-chip">{e(str(r['market_type']))}</span>
+    <span class="se-badge {bcls}">{e(badge)}</span>
+  </div>
+  <div class="se-pick">{e(str(r['pick_label']))}</div>
+  <div class="se-sub">{e(str(r['matchup']))}{
+      ' · ' + e(str(r['kickoff'])) if str(r.get('kickoff','')).strip() else ''}</div>
+  <div class="se-m">
+    <div><b>{float(r['bet_line']):g}</b><span>LINE</span></div>
+    <div><b>{float(r['model_line']):.1f}</b><span>MODEL</span></div>
+    <div><b>{float(r['edge_pts']):+.2f}</b><span>EDGE</span></div>
+    <div><b>{float(r['cover_prob']):.1%}</b><span>COVER</span></div>
+    <div><b class="{evc}">{ev:+.2%}</b><span>EV</span></div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+
+# ----------------------------------------------------------------------
 # UI
 # ----------------------------------------------------------------------
 st.title("Sunday Edge")
@@ -558,8 +614,6 @@ st.warning(
     f"model's lean, not a demonstrated edge. The tracker is built to give "
     f"you a real answer as the record accumulates."
 )
-
-tab_slate, tab_game, tab_tracker = st.tabs(["Slate", "Game", "Tracker"])
 
 c_ref, c_stamp = st.columns([1, 3])
 if c_ref.button("Refresh lines", use_container_width=True):
@@ -597,6 +651,8 @@ if _pulled:
 
 sign = line_sign(sched_all)
 
+tab_slate, tab_game, tab_tracker = st.tabs(["Slate", "Game", "Tracker"])
+
 with tab_slate:
     seasons = sorted(sched_all["season"].unique())
     c1, c2 = st.columns(2)
@@ -605,43 +661,48 @@ with tab_slate:
     week = c2.selectbox("Week", weeks, index=min(len(weeks) - 1, 0))
 
     card, rt = build_card(sched_all, season, week, sign, offers=live_offers)
+    st.markdown(CARD_CSS, unsafe_allow_html=True)
 
     if rt is None:
         st.info("Not enough completed games yet to build ratings.")
-    elif card.empty:
-        st.info(
-            f"No games clear the {WATCH_EDGE_PTS:g}-point floor this week. "
-            f"That is a normal result, not an error."
-        )
     else:
-        st.caption(f"Ratings fit on {rt['n_prior']:,} prior games · "
-                   f"home field {rt['hfa']:+.2f} pts")
+        official = card[card["bet_tier"] == "OFFICIAL"] if not card.empty \
+            else card
+        watch = card[card["bet_tier"] == "WATCH"] if not card.empty else card
 
-        for tier, label in [("OFFICIAL", "Official bets"), ("WATCH", "Watch list")]:
-            sub = card[card["bet_tier"] == tier]
-            if sub.empty:
-                continue
-            st.subheader(f"{label} ({len(sub)})")
-            show = sub[["matchup", "pick_label", "market_type", "bet_line",
-                        "model_line", "edge_pts", "cover_prob", "expected_value"]].copy()
-            show["cover_prob"] = show["cover_prob"].map(lambda v: f"{v:.1%}")
-            show["expected_value"] = show["expected_value"].map(lambda v: f"{v:+.2%}")
-            show["edge_pts"] = show["edge_pts"].map(lambda v: f"{v:+.2f}")
-            show["model_line"] = [
-                f"{v:.1f}" if m == "TOTAL" else f"{v:+.1f}"
-                for v, m in zip(sub["model_line"], sub["market_type"])
-            ]
-            show.columns = ["Game", "Pick", "Market", "Line", "Model", "Edge",
-                            "Cover", "EV"]
-            st.dataframe(show, hide_index=True, use_container_width=True)
+        # The headline decision, before any numbers.
+        if official.empty:
+            st.markdown("## No bets this week")
+            st.caption(
+                f"Nothing clears the {MIN_EDGE_PTS:g}-point bar. That is the "
+                f"model's answer, not a failure to load — most NFL weeks "
+                f"should look like this."
+            )
+        else:
+            st.markdown(f"## Bet {len(official)} "
+                        f"{'game' if len(official) == 1 else 'games'}")
 
-        if st.button("Freeze this card", type="primary"):
+        if not official.empty:
+            st.markdown("#### Official bets")
+            top = official["expected_value"].idxmax()
+            for i, (idx, r) in enumerate(official.iterrows(), start=1):
+                render_card(r, i, "BEST BET" if idx == top else "BET")
+
+        if not watch.empty:
+            st.markdown("#### Watch list")
+            st.caption("Tracked separately. Not part of the official record.")
+            for i, (_, r) in enumerate(watch.iterrows(), start=1):
+                render_card(r, i, "WATCH")
+
+        if not card.empty and st.button("Freeze this card", type="primary",
+                                        use_container_width=True):
             tr, n = freeze(card, load_tracker())
             st.success(f"Froze {n} new bets." if n else "Nothing new to freeze.")
 
+        st.caption(f"Ratings fit on {rt['n_prior']:,} prior games · "
+                   f"home field {rt['hfa']:+.2f} pts")
+
 with tab_game:
-    st.write("Every number behind one game, so you can see where the "
-             "model's line comes from.")
     gs = sorted(sched_all["season"].unique())
     d1, d2 = st.columns(2)
     g_season = d1.selectbox("Season", gs, index=len(gs) - 1, key="g_season")
@@ -663,70 +724,69 @@ with tab_game:
         hfa = rt_g["hfa"]
         raw = rh - ra + hfa
 
-        st.subheader("Power ratings")
-        r1, r2, r3 = st.columns(3)
-        r1.metric(f"{h} (home)", f"{rh:+.2f}")
-        r2.metric(f"{a} (away)", f"{ra:+.2f}")
-        r3.metric("Home field", f"{hfa:+.2f}")
+        def verdict_block(label, edge, p, e, lean, mkt, model, sd):
+            """Answer first. The arithmetic is available but folded away —
+            on a phone the derivation was burying the actual call."""
+            st.markdown(f"### {label}")
+            if abs(edge) >= MIN_EDGE_PTS and e > 0:
+                st.success(f"**BET {lean}** · EV {e:+.2%}")
+            elif abs(edge) >= WATCH_EDGE_PTS:
+                st.warning(f"**WATCH {lean}** · EV {e:+.2%} — below the "
+                           f"{MIN_EDGE_PTS:g}-point bar")
+            else:
+                st.error(f"**NO BET** · EV {e:+.2%} · model leans {lean}")
+            st.dataframe(
+                pd.DataFrame({
+                    "": ["Market", "Model", "Disagreement", "Edge after blend",
+                         "Cover probability"],
+                    " ": [f"{mkt:.1f}", f"{model:.1f}", f"{model - mkt:+.2f} pts",
+                          f"{edge:+.2f} pts", f"{p:.1%}"],
+                }), hide_index=True, use_container_width=True)
+            with st.expander("Show the arithmetic"):
+                st.write(
+                    f"The model line comes from the two power ratings plus "
+                    f"home field. It is then blended toward the market at "
+                    f"{MODEL_WEIGHT}, the weight the backtest earned:"
+                )
+                st.code(
+                    f"blended fair = {mkt:.2f} + {MODEL_WEIGHT} x "
+                    f"({model - mkt:+.2f}) = {mkt + MODEL_WEIGHT*(model-mkt):.2f}\n"
+                    f"edge         = {edge:+.2f} pts\n"
+                    f"cover prob   = normal({abs(edge):.2f} / {sd}) = {p:.1%}",
+                    language=None)
+
         st.caption(
-            f"Fit on {rt_g['n_prior']:,} prior games. In-season games so far: "
-            f"{rt_g['n_in_season']}, carrying "
-            f"{rt_g['in_season_weight']:.0%} weight — the rest comes from "
-            f"earlier seasons scaled by {CARRYOVER:.2f}."
+            f"{h} {rh:+.2f} · {a} {ra:+.2f} · home field {hfa:+.2f} — "
+            f"fit on {rt_g['n_prior']:,} games, {rt_g['n_in_season']} of them "
+            f"this season ({rt_g['in_season_weight']:.0%} weight)."
         )
 
-        st.subheader("Spread")
         if pd.notna(row.get("spread_line")):
             mkt = sign * float(row["spread_line"])
             fair = mkt + MODEL_WEIGHT * (raw - mkt)
             edge = fair - mkt
-            side = "HOME" if edge > 0 else "AWAY"
-            p = norm_cdf(abs(edge) / SD_MARGIN)
-            st.code(
-                f"model line      {rh:+.2f} - ({ra:+.2f}) + {hfa:+.2f} "
-                f"= {raw:+.2f}\n"
-                f"market line     {mkt:+.2f}\n"
-                f"disagreement    {raw - mkt:+.2f} pts\n"
-                f"blended fair    {mkt:+.2f} + {MODEL_WEIGHT} x "
-                f"({raw - mkt:+.2f}) = {fair:+.2f}\n"
-                f"edge            {edge:+.2f} pts\n"
-                f"cover prob      normal({abs(edge):.2f} / {SD_MARGIN}) "
-                f"= {p:.1%}\n"
-                f"EV at -110      {ev_from_prob(p):+.2%}\n"
-                f"lean            {h if side == 'HOME' else a}",
-                language=None,
-            )
+            lean = h if edge > 0 else a
+            verdict_block("Spread", edge, norm_cdf(abs(edge) / SD_MARGIN),
+                          ev_from_prob(norm_cdf(abs(edge) / SD_MARGIN)),
+                          lean, mkt, raw, SD_MARGIN)
         else:
             st.info("No spread posted for this game.")
 
-        st.subheader("Total")
         if rt_g["total"] and pd.notna(row.get("total_line")):
             th = rt_g["total"].get(h, 0.0); ta = rt_g["total"].get(a, 0.0)
             raw_t = th + ta + rt_g["tbase"]
             mt = float(row["total_line"])
-            fair_t = mt + MODEL_WEIGHT * (raw_t - mt)
-            edge_t = fair_t - mt
-            p = norm_cdf(abs(edge_t) / SD_TOTAL)
-            st.code(
-                f"model total     {th:.2f} + {ta:.2f} + {rt_g['tbase']:.2f} "
-                f"= {raw_t:.2f}\n"
-                f"market total    {mt:.2f}\n"
-                f"disagreement    {raw_t - mt:+.2f} pts\n"
-                f"blended fair    {fair_t:.2f}\n"
-                f"edge            {edge_t:+.2f} pts\n"
-                f"cover prob      {p:.1%}\n"
-                f"EV at -110      {ev_from_prob(p):+.2%}\n"
-                f"lean            {'Over' if edge_t > 0 else 'Under'} {mt:g}",
-                language=None,
-            )
+            edge_t = MODEL_WEIGHT * (raw_t - mt)
+            lean = f"Over {mt:g}" if edge_t > 0 else f"Under {mt:g}"
+            verdict_block("Total", edge_t, norm_cdf(abs(edge_t) / SD_TOTAL),
+                          ev_from_prob(norm_cdf(abs(edge_t) / SD_TOTAL)),
+                          lean, mt, raw_t, SD_TOTAL)
         else:
             st.info("No total posted for this game.")
 
         if pd.notna(row.get("home_score")):
-            st.caption(
-                f"Final: {a} {row['away_score']:.0f} - "
-                f"{h} {row['home_score']:.0f}"
-            )
+            st.caption(f"Final: {a} {row['away_score']:.0f} — "
+                       f"{h} {row['home_score']:.0f}")
 
 with tab_tracker:
     tr = load_tracker()
