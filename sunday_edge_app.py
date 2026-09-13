@@ -78,10 +78,23 @@ MODEL_WEIGHT  = 0.099
 BACKTEST_T    = 1.19
 BACKTEST_N    = 4254
 
-MIN_EDGE_PTS  = 1.0   # official tier: model/market disagreement in points
-WATCH_EDGE_PTS = 0.5  # watch tier floor; below this nothing is shown
+# Bet threshold in EXPECTED VALUE, not points of edge.
+#
+# Points only map to EV at a fixed price. Breakeven needs 0.79 points at -110,
+# 0.55 at -105 and 0.30 at +100 — so a points bar silently means different
+# things at different prices, and throws away the one thing you can actually
+# control. Gating on EV means a bet qualifies when the price your book is
+# offering makes it worth taking, and never otherwise.
+MIN_EV = 0.0
 
-MODEL_VERSION = f"1.0.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT}-e{MIN_EDGE_PTS}"
+
+MODEL_VERSION_BASE = f"1.1.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT}"
+
+
+def model_version():
+    """Threshold is part of the version: change the bar and the record it
+    produces is no longer comparable with what came before."""
+    return f"{MODEL_VERSION_BASE}-ev{MIN_EV:g}"
 
 TRACKER_COLS = [
     "record_key", "frozen_at", "season", "week", "game_id", "kickoff",
@@ -174,7 +187,8 @@ def fetch_live_odds(_bust=0):
         r = requests.get(
             "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds",
             params={"apiKey": key, "regions": "us",
-                    "markets": "spreads,totals", "oddsFormat": "american"},
+                    "markets": "spreads,totals,h2h",
+                    "oddsFormat": "american"},
             timeout=20,
         )
         if r.status_code != 200:
@@ -186,12 +200,17 @@ def fetch_live_odds(_bust=0):
             a = ODDS_TEAM.get(ev.get("away_team"))
             if not h or not a:
                 continue
-            spreads, totals = [], []
+            spreads, totals, mls = [], [], []
             for bk in ev.get("bookmakers", []):
                 book = bk.get("title") or bk.get("key")
                 for mk in bk.get("markets", []):
                     for o in mk.get("outcomes", []):
                         pt, pr = o.get("point"), o.get("price")
+                        if mk.get("key") == "h2h" and pr is not None:
+                            _t = ODDS_TEAM.get(o.get("name"))
+                            if _t in (h, a):
+                                mls.append((_t, float(pr)))
+                            continue
                         if pt is None or pr is None:
                             continue
                         if mk.get("key") == "spreads":
@@ -203,6 +222,7 @@ def fetch_live_odds(_bust=0):
                             if nm in ("OVER", "UNDER"):
                                 totals.append((nm, float(pt), float(pr), book))
             offers[(a, h)] = {"spreads": spreads, "totals": totals,
+                              "moneylines": mls,
                               "commence": ev.get("commence_time")}
         st.session_state["odds_pulled_at"] = datetime.now(timezone.utc)
         return offers, left, None
@@ -451,8 +471,11 @@ def build_card(sched, season, week, sign, offers=None):
     card = card.sort_values("abs_edge", ascending=False).reset_index(drop=True)
     # Tiers are FILTERS, not quotas. If nothing clears the floor the
     # section is empty, which is a legitimate answer for a week.
-    card["bet_tier"] = np.where(card["abs_edge"] >= MIN_EDGE_PTS, "OFFICIAL",
-                        np.where(card["abs_edge"] >= WATCH_EDGE_PTS, "WATCH", None))
+    # Everything stays on the card so there is always something to look at.
+    # The EV gate decides which rows are BETS, not which rows exist.
+    card["bet_tier"] = np.where(
+        pd.to_numeric(card["expected_value"], errors="coerce").fillna(-9)
+        >= MIN_EV, "OFFICIAL", "PASS")
     return card[card["bet_tier"].notna()].copy(), rt
 
 
@@ -480,7 +503,7 @@ def freeze(card, tracker):
             "model_line": r["model_line"], "edge_pts": r["edge_pts"],
             "cover_prob": r["cover_prob"], "expected_value": r["expected_value"],
             "odds": r["odds"], "bet_tier": r["bet_tier"],
-            "model_version": MODEL_VERSION, "status": "FROZEN",
+            "model_version": model_version(), "status": "FROZEN",
         })
         new.append(row)
     if not new:
@@ -546,98 +569,146 @@ def summarize(df):
     return dict(w=w, l=l, p=p, units=u, roi=u / len(g), n=len(g))
 
 
+def ml_flags(sched, season, week, rt, sign, offers):
+    """
+    Moneylines worth taking, priced on the same scale as the board: shrunk
+    toward the market's implied probability, not toward a coin flip.
+    """
+    if not rt or not offers:
+        return []
+    out = []
+    games = sched[(sched["season"] == season) & (sched["week"] == week)]
+    for _, g in games.iterrows():
+        h, a = g["home_team"], g["away_team"]
+        if h not in rt["margin"] or a not in rt["margin"]:
+            continue
+        live = lookup_offers(offers, a, h)
+        if not live:
+            continue
+        raw = rt["margin"][h] - rt["margin"][a] + rt["hfa"]
+        p_home = norm_cdf(raw / SD_MARGIN)
+        for team, prob in ((h, p_home), (a, 1.0 - p_home)):
+            price = None
+            for side, pt, pr, bk in live.get("spreads", []):
+                pass
+            mls = live.get("moneylines") or []
+            for nm, pr in mls:
+                if nm == team:
+                    price = pr
+            if price is None:
+                continue
+            imp = 1.0 / (1.0 + (price / 100.0)) if price > 0 else \
+                abs(price) / (abs(price) + 100.0)
+            ps = imp + MODEL_WEIGHT * (prob - imp)
+            e = ev_from_prob(ps, price)
+            if e is None:
+                continue
+            out.append({"matchup": f"{a} @ {h}", "pick": f"{team} ML",
+                        "odds": int(price), "prob": ps, "ev": e})
+    return out
+
+
 # ----------------------------------------------------------------------
 # Card rendering
 # ----------------------------------------------------------------------
 CARD_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap');
 
-/* Palette: cool paper and ink, the vernacular of a research screen.
-   Green reads as a call to act, amber as a hold, slate as a settled no.
-   "No bet" is the common, correct answer here — it is never an error. */
 :root{
-  --ink:#12171F; --muted:#68727F; --line:#E2E7EE; --rail:#F5F7FA;
-  --go:#0F7B4F; --hold:#8A6100; --off:#8892A0;
+  --ink:#12171F; --muted:#6B7683; --faint:#9AA3AE;
+  --line:#E4E9F0; --rail:#F6F8FA;
+  --go:#0F7B4F; --go-bg:#E8F4EE;
+  --hold:#8A6100; --hold-bg:#FBF3E2;
+  --off:#7A838F; --off-bg:#F1F3F6; --loss:#A62B2B;
 }
-html,body,[class*="css"],.stMarkdown{font-family:'Archivo',system-ui,sans-serif}
-.se-num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+html,body,[class*="css"],.stMarkdown,.stButton button{
+  font-family:'Archivo',system-ui,-apple-system,sans-serif}
+#MainMenu,footer,header[data-testid="stHeader"]{visibility:hidden;height:0}
+.block-container{padding-top:1.2rem;padding-bottom:3rem;max-width:46rem}
 
-.se-hero{margin:2px 0 18px}
-.se-hero h1{font-size:1.9rem;font-weight:800;letter-spacing:-.02em;
-  line-height:1.1;margin:0 0 4px}
-.se-hero p{color:var(--muted);font-size:.9rem;margin:0;max-width:60ch}
+.se-head{margin:0 0 4px}
+.se-head h1{font-size:1.75rem;font-weight:800;letter-spacing:-.025em;
+  line-height:1.08;margin:0}
+.se-head .sub{color:var(--muted);font-size:.88rem;margin-top:5px;max-width:56ch}
 
-.se-row{border-top:1px solid var(--line);padding:16px 0}
+.se-row{border-top:1px solid var(--line);padding:18px 0 16px}
 .se-row:last-of-type{border-bottom:1px solid var(--line)}
-.se-call{display:flex;align-items:baseline;gap:10px;margin-bottom:2px}
-.se-verdict{font-size:.74rem;font-weight:700;letter-spacing:.02em;
-  padding:2px 9px;border-radius:4px}
-.se-verdict.go{background:var(--go);color:#fff}
-.se-verdict.hold{background:#FDF4E0;color:var(--hold)}
-.se-verdict.off{background:var(--rail);color:var(--off)}
-.se-pick{font-size:1.5rem;font-weight:800;letter-spacing:-.02em;
-  line-height:1.15;margin:6px 0 2px}
-.se-meta{color:var(--muted);font-size:.85rem;margin-bottom:12px}
-.se-meta .sep{opacity:.4;padding:0 6px}
+.se-tag{display:inline-block;font-size:.7rem;font-weight:700;
+  padding:3px 9px;border-radius:4px;letter-spacing:.01em}
+.se-tag.go{background:var(--go);color:#fff}
+.se-tag.hold{background:var(--hold-bg);color:var(--hold)}
+.se-tag.off{background:var(--off-bg);color:var(--off)}
+.se-pick{font-size:1.55rem;font-weight:800;letter-spacing:-.025em;
+  line-height:1.12;margin:9px 0 3px;color:var(--ink)}
+.se-meta{color:var(--muted);font-size:.84rem}
+.se-meta .sep{color:var(--faint);padding:0 7px}
 
-.se-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:2px 10px}
-.se-stats div{display:flex;flex-direction:column-reverse}
-.se-stats dt{font-size:.68rem;color:var(--muted);font-weight:500;margin-top:2px}
-.se-stats dd{font-size:1rem;font-weight:600;margin:0;
+.se-stats{display:grid;grid-template-columns:repeat(4,1fr);
+  gap:0 8px;margin-top:14px}
+.se-stats > div{display:flex;flex-direction:column}
+.se-stats .v{font-size:1.02rem;font-weight:700;line-height:1.3;
   font-variant-numeric:tabular-nums}
-.pos{color:var(--go)} .neg{color:#A62B2B}
+.se-stats .k{font-size:.68rem;color:var(--muted);font-weight:500}
+.v.pos{color:var(--go)} .v.neg{color:var(--loss)}
 
-.se-empty{border:1px solid var(--line);border-radius:10px;padding:26px 20px;
-  background:var(--rail)}
-.se-empty h2{font-size:1.3rem;font-weight:700;margin:0 0 6px}
-.se-empty p{color:var(--muted);font-size:.9rem;margin:0;max-width:52ch}
+.se-note{margin-top:12px;font-size:.79rem;color:var(--muted);
+  background:var(--rail);border-radius:6px;padding:8px 11px;line-height:1.45}
+.se-note b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+
+.se-empty{border:1px solid var(--line);border-radius:12px;
+  padding:30px 22px;background:var(--rail)}
+.se-empty h2{font-size:1.3rem;font-weight:700;margin:0 0 7px;
+  letter-spacing:-.02em}
+.se-empty p{color:var(--muted);font-size:.89rem;margin:0;max-width:50ch;
+  line-height:1.55}
+.se-sec{font-size:.95rem;font-weight:700;margin:30px 0 2px;
+  letter-spacing:-.01em}
+.se-sec + .cap{color:var(--muted);font-size:.82rem;margin-bottom:6px}
 </style>
 """
 
 
 def render_row(r, badge):
     """
-    One game, one call. The verdict leads; the numbers sit underneath in a
-    fixed grid so a column can be scanned down and compared like with like.
-    Lines are shown from the perspective of the side being picked, matching
-    the pick text — the two used to disagree in sign.
+    Verdict first, then the pick, then the numbers on one aligned grid.
+    The note spells out the discount: readers kept seeing a six-point
+    disagreement and a "no bet" and could not connect the two, because
+    the weighting step happened invisibly between them.
     """
     cls = {"Bet": "go", "Best bet": "go", "Watch": "hold"}.get(badge, "off")
     ev = float(r["expected_value"])
     e = _html.escape
     side = str(r.get("pick_side", "")).upper()
-    line = float(r["bet_line"])
-    model = float(r["model_line"])
-    is_spread = str(r["market_type"]).upper() == "SPREAD"
-    if is_spread:
-        # Stored in home-margin terms. A picked HOME side flips both numbers
-        # into that team's own spread; a picked AWAY side keeps both.
+    line, model, edge = (float(r["bet_line"]), float(r["model_line"]),
+                         float(r["edge_pts"]))
+    if str(r["market_type"]).upper() == "SPREAD":
         shown_line = -line if side == "HOME" else line
         shown_model = -model if side == "HOME" else model
-        line_lab, model_lab = "Line", "Model"
-        fl = lambda v: f"{v:+g}"
-        fm = lambda v: f"{v:+.1f}"
+        lab = "Line"
+        fl, fm = f"{shown_line:+g}", f"{shown_model:+.1f}"
     else:
-        shown_line, shown_model = line, model
-        line_lab, model_lab = "Total", "Model"
-        fl = lambda v: f"{v:g}"
-        fm = lambda v: f"{v:.1f}"
+        shown_line, shown_model, lab = line, model, "Total"
+        fl, fm = f"{shown_line:g}", f"{shown_model:.1f}"
+    gap = abs(shown_model - shown_line)
     kick = str(r.get("kickoff", "")).strip()
     st.markdown(f"""
 <div class="se-row">
-  <div class="se-call">
-    <span class="se-verdict {cls}">{e(badge)}</span>
-  </div>
+  <span class="se-tag {cls}">{e(badge)}</span>
   <div class="se-pick">{e(str(r['pick_label']))}</div>
   <div class="se-meta">{e(str(r['matchup']))}{
      f'<span class="sep">/</span>{e(kick)}' if kick else ''}</div>
-  <dl class="se-stats">
-    <div><dt>{line_lab}</dt><dd>{fl(shown_line)}</dd></div>
-    <div><dt>{model_lab}</dt><dd>{fm(shown_model)}</dd></div>
-    <div><dt>Cover</dt><dd>{float(r['cover_prob']):.1%}</dd></div>
-    <div><dt>Value</dt><dd class="{'pos' if ev>0 else 'neg'}">{ev:+.2%}</dd></div>
-  </dl>
+  <div class="se-stats">
+    <div><span class="v">{fl}</span><span class="k">{lab}</span></div>
+    <div><span class="v">{fm}</span><span class="k">Model</span></div>
+    <div><span class="v">{edge:+.2f}</span><span class="k">Edge</span></div>
+    <div><span class="v {'pos' if ev>0 else 'neg'}">{ev:+.2%}</span>
+         <span class="k">Value</span></div>
+  </div>
+  <div class="se-note">Model is <b>{gap:.1f}</b> points off the market.
+    Weighted at {MODEL_WEIGHT}, that becomes <b>{abs(edge):.2f}</b> points of
+    edge &mdash; the weight this model earned against
+    {BACKTEST_N:,} past games.</div>
 </div>""", unsafe_allow_html=True)
 
 
@@ -645,7 +716,7 @@ def render_row(r, badge):
 # UI
 # ----------------------------------------------------------------------
 st.title("Sunday Edge")
-st.caption(f"NFL spreads and totals · model {MODEL_VERSION}")
+st.caption(f"NFL spreads and totals · model {model_version()}")
 
 st.warning(
     f"**This model did not beat the closing line in backtest.** Across "
@@ -670,6 +741,21 @@ except Exception as e:
 
 live_offers, credits_left, odds_err = fetch_live_odds(
     _bust=st.session_state.get("bust", 0))
+
+# Price at one book, since that is where the bets actually get placed.
+_books = sorted({bk for o in (live_offers or {}).values()
+                 for _, _, _, bk in (o.get("spreads", []) + o.get("totals", []))})
+if _books:
+    _book = st.selectbox("Your book", ["Best of all books"] + _books,
+                         key="se_book")
+    if _book != "Best of all books":
+        live_offers = {
+            k: {"spreads": [r for r in v.get("spreads", []) if r[3] == _book],
+                "totals": [r for r in v.get("totals", []) if r[3] == _book],
+                "moneylines": v.get("moneylines", []),
+                "commence": v.get("commence")}
+            for k, v in live_offers.items()
+        }
 if odds_err == "no key":
     st.info("Add `odds_api_key` to Streamlit secrets for live multi-book "
             "lines and line shopping. Using nflverse lines for now.")
@@ -700,42 +786,79 @@ with tab_slate:
     weeks = sorted(sched_all[sched_all["season"] == season]["week"].unique())
     week = c2.selectbox("Week", weeks, index=min(len(weeks) - 1, 0))
 
+    if not st.button("Run Sunday card", type="primary",
+                     use_container_width=True):
+        st.caption("Pick the week above, then run.")
+        st.stop()
+
     card, rt = build_card(sched_all, season, week, sign, offers=live_offers)
     st.markdown(CARD_CSS, unsafe_allow_html=True)
 
     if rt is None:
         st.info("Not enough completed games yet to build ratings.")
     else:
-        official = card[card["bet_tier"] == "OFFICIAL"] if not card.empty else card
-        watch = card[card["bet_tier"] == "WATCH"] if not card.empty else card
+        _ml = [f for f in (ml_flags(sched_all, season, week, rt, sign,
+                                    live_offers) or [])]
+        _bets = card[card["bet_tier"] == "OFFICIAL"] if not card.empty else card
+        _n = len(_bets) + sum(1 for f in _ml if f["ev"] >= MIN_EV)
 
-        if official.empty:
-            # The common case, and a real answer. Not an error state.
+        if _n:
             st.markdown(
-                '<div class="se-empty"><h2>Nothing worth betting</h2>'
-                '<p>No game this week clears the value bar. Roughly ten '
-                'qualify across a full season, so most weeks land here.</p>'
-                '</div>', unsafe_allow_html=True)
+                f'<div class="se-head"><h1>{_n} '
+                f'{"bet" if _n == 1 else "bets"} today</h1>'
+                f'<div class="sub">Priced at the book selected above. '
+                f'Anything below is shown for context, not as a bet.</div>'
+                f'</div>', unsafe_allow_html=True)
         else:
-            n = len(official)
             st.markdown(
-                f'<div class="se-hero"><h1>{n} '
-                f'{"bet" if n == 1 else "bets"} this week</h1>'
-                f'<p>Ranked by value. Lines shown from the side being '
-                f'picked.</p></div>', unsafe_allow_html=True)
-            top = official["expected_value"].idxmax()
-            for idx, r in official.iterrows():
-                render_row(r, "Best bet" if idx == top else "Bet")
+                '<div class="se-empty"><h2>No bets today</h2>'
+                '<p>Nothing on the board is worth taking at the prices '
+                'offered. The strongest plays in each market are below so '
+                'you can see how close it came.</p></div>',
+                unsafe_allow_html=True)
 
-        if not watch.empty:
-            st.markdown("#### Close, but not bets")
-            st.caption("Tracked separately and excluded from the record.")
-            for _, r in watch.iterrows():
-                render_row(r, "Watch")
+        def _section(title, sub, rows, limit):
+            if not len(rows):
+                return
+            st.markdown(f'<div class="se-sec">{title}</div>'
+                        f'<div class="cap">{sub}</div>',
+                        unsafe_allow_html=True)
+            top = rows.sort_values("expected_value", ascending=False).head(limit)
+            best = top["expected_value"].idxmax() if len(top) else None
+            for idx, r in top.iterrows():
+                if float(r["expected_value"]) < MIN_EV:
+                    badge = "No bet"
+                elif idx == best:
+                    badge = "Best bet"
+                else:
+                    badge = "Bet"
+                render_row(r, badge)
 
-        if not card.empty and st.button("Freeze this card", type="primary",
-                                        use_container_width=True):
-            tr, n = freeze(card, load_tracker())
+        if not card.empty:
+            _section("Spreads", "Strongest three, best value first.",
+                     card[card["market_type"] == "SPREAD"], 3)
+            _section("Totals", "Strongest three, best value first.",
+                     card[card["market_type"] == "TOTAL"], 3)
+
+        if _ml:
+            st.markdown('<div class="se-sec">Moneylines</div>'
+                        '<div class="cap">Shown only when the price makes '
+                        'them worth it. Not part of the tracked record.</div>',
+                        unsafe_allow_html=True)
+            for f in sorted(_ml, key=lambda r: -r["ev"])[:2]:
+                if f["ev"] < MIN_EV:
+                    continue
+                st.markdown(
+                    f'<div class="se-mlf"><div class="se-mlf-main">'
+                    f'<b>{_html.escape(f["pick"])} {f["odds"]:+d}</b>'
+                    f'<small>{_html.escape(f["matchup"])}</small></div>'
+                    f'<div class="se-mlf-stats"><b>{f["ev"]*100:+.1f}% EV</b>'
+                    f'<span>{f["prob"]*100:.1f}% win</span></div></div>',
+                    unsafe_allow_html=True)
+
+        if not _bets.empty and st.button("Freeze today's bets", type="primary",
+                                         use_container_width=True):
+            tr, n = freeze(_bets, load_tracker())
             st.success(f"Froze {n} new bets." if n else "Nothing new to freeze.")
 
         st.caption(f"Ratings fit on {rt['n_prior']:,} prior games. "
@@ -768,10 +891,8 @@ with tab_game:
             """Answer first. The arithmetic is available but folded away —
             on a phone the derivation was burying the actual call."""
             st.markdown(f"### {label}")
-            if abs(edge) >= MIN_EDGE_PTS and e > 0:
+            if e is not None and e >= MIN_EV:
                 st.success(f"Bet {lean}. Value {e:+.2%}.")
-            elif abs(edge) >= WATCH_EDGE_PTS:
-                st.warning(f"Watch {lean}. Value {e:+.2%}, below the bar.")
             else:
                 # Neutral, not red: no bet is the correct answer most weeks.
                 st.info(f"No bet. Value {e:+.2%}. The model leans {lean}.")
