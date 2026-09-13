@@ -860,13 +860,32 @@ with tab_slate:
     if rt is None:
         st.info("Not enough completed games yet to build ratings.")
     else:
-        _ml = ml_flags(sched_all, season, week, rt, sign, live_offers) or []
-        _kick = ""
-        try:
-            _kick = pd.to_datetime(
-                card["kickoff"].iloc[0]).strftime("%A, %b %-d")
-        except Exception:
-            _kick = f"Week {week}"
+        # An NFL week runs Thursday to Monday. The card is for ONE day, and
+        # never includes a game that has already kicked off.
+        _now = pd.Timestamp.now(tz="America/New_York").tz_localize(None)
+        if not card.empty:
+            _k = pd.to_datetime(card["kickoff"], errors="coerce")
+            card = card.assign(_kick=_k)
+            card = card[card["_kick"].notna() & (card["_kick"] > _now)]
+
+        if card.empty:
+            st.info("No games left to play in this week.")
+            st.stop()
+
+        _days = sorted(card["_kick"].dt.date.unique())
+        _day = st.selectbox(
+            "Day", _days, index=0,
+            format_func=lambda d: pd.Timestamp(d).strftime("%A, %b %-d"),
+        )
+        card = card[card["_kick"].dt.date == _day]
+        if card.empty:
+            st.info("Nothing left on that day.")
+            st.stop()
+
+        _ml = [f for f in (ml_flags(sched_all, season, week, rt, sign,
+                                    live_offers) or [])
+               if str(f.get("matchup")) in set(card["matchup"])]
+        _kick = pd.Timestamp(_day).strftime("%A, %b %-d")
 
         def _rows(df, limit):
             if df.empty:
