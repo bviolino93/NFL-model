@@ -61,7 +61,14 @@ RIDGE_ALPHA   = 8.0
 # Applied ONLY where there is no in-season data. This scales last year's
 # ratings toward average; too low and every game looks like a pick'em,
 # which makes the model take underdogs indiscriminately in early weeks.
-CARRYOVER     = 0.65
+# No extra shrinkage on prior-season ratings. The rolling window already
+# spans multiple seasons, so r_all is a multi-year average with regression to
+# the mean baked in — scaling it again double-counted that. Worse, it
+# compressed the rating gaps while home field stayed at full strength, so in
+# Week 1 the model drifted toward the home side in every game and the card
+# filled up with home underdogs. Ratings and home field now sit on the same
+# scale.
+CARRYOVER     = 1.00
 WINDOW_GAMES  = 320
 
 # Residual SDs measured on 4,254 games, 2007-2025. These convert a point
@@ -656,6 +663,32 @@ html,body,[class*="css"],.stMarkdown,.stButton button{
   background:var(--rail);border-radius:6px;padding:8px 11px;line-height:1.45}
 .se-note b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
 
+/* Share card: one screen, no explanation blocks, nothing that reads as a
+   rejection. Built to be screenshotted. */
+.sc-wrap{border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  margin-bottom:10px}
+.sc-top{padding:13px 16px 11px;background:var(--ink);color:#fff}
+.sc-top h2{margin:0;font-size:1.12rem;font-weight:800;letter-spacing:-.02em}
+.sc-top span{display:block;font-size:.74rem;opacity:.62;margin-top:2px}
+.sc-grp{font-size:.64rem;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--muted);padding:10px 16px 4px;
+  background:var(--rail)}
+.sc-row{display:flex;align-items:center;gap:11px;padding:10px 16px;
+  border-top:1px solid var(--line)}
+.sc-rank{flex:0 0 18px;font-size:.76rem;font-weight:700;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.sc-main{flex:1 1 auto;min-width:0}
+.sc-main b{display:block;font-size:1.02rem;font-weight:800;
+  letter-spacing:-.02em;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.sc-main small{display:block;font-size:.72rem;color:var(--muted);margin-top:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc-num{flex:0 0 auto;text-align:right;font-variant-numeric:tabular-nums}
+.sc-num b{display:block;font-size:.9rem;font-weight:700}
+.sc-num span{display:block;font-size:.66rem;color:var(--muted)}
+.sc-foot{padding:9px 16px;font-size:.68rem;color:var(--muted);
+  background:var(--rail);border-top:1px solid var(--line)}
+
 .se-empty{border:1px solid var(--line);border-radius:12px;
   padding:30px 22px;background:var(--rail)}
 .se-empty h2{font-size:1.3rem;font-weight:700;margin:0 0 7px;
@@ -797,72 +830,82 @@ with tab_slate:
     if rt is None:
         st.info("Not enough completed games yet to build ratings.")
     else:
-        _ml = [f for f in (ml_flags(sched_all, season, week, rt, sign,
-                                    live_offers) or [])]
-        _bets = card[card["bet_tier"] == "OFFICIAL"] if not card.empty else card
-        _n = len(_bets) + sum(1 for f in _ml if f["ev"] >= MIN_EV)
+        _ml = ml_flags(sched_all, season, week, rt, sign, live_offers) or []
+        _kick = ""
+        try:
+            _kick = pd.to_datetime(
+                card["kickoff"].iloc[0]).strftime("%A, %b %-d")
+        except Exception:
+            _kick = f"Week {week}"
 
-        if _n:
-            st.markdown(
-                f'<div class="se-head"><h1>{_n} '
-                f'{"bet" if _n == 1 else "bets"} today</h1>'
-                f'<div class="sub">Priced at the book selected above. '
-                f'Anything below is shown for context, not as a bet.</div>'
-                f'</div>', unsafe_allow_html=True)
-        else:
-            st.markdown(
-                '<div class="se-empty"><h2>No bets today</h2>'
-                '<p>Nothing on the board is worth taking at the prices '
-                'offered. The strongest plays in each market are below so '
-                'you can see how close it came.</p></div>',
-                unsafe_allow_html=True)
+        def _rows(df, limit):
+            if df.empty:
+                return []
+            return list(df.sort_values("expected_value",
+                                       ascending=False).head(limit).iterrows())
 
-        def _section(title, sub, rows, limit):
-            if not len(rows):
+        _sp = _rows(card[card["market_type"] == "SPREAD"], 3)
+        _to = _rows(card[card["market_type"] == "TOTAL"], 3)
+        _mo = sorted([f for f in _ml if f["ev"] >= MIN_EV],
+                     key=lambda r: -r["ev"])[:2]
+        _n = len(_sp) + len(_to) + len(_mo)
+
+        _h = [f'<div class="sc-wrap">'
+              f'<div class="sc-top"><h2>Top picks</h2>'
+              f'<span>{_html.escape(_kick)} \u00b7 {_n} plays</span></div>']
+
+        def _blk(title, items):
+            if not items:
                 return
-            st.markdown(f'<div class="se-sec">{title}</div>'
-                        f'<div class="cap">{sub}</div>',
-                        unsafe_allow_html=True)
-            top = rows.sort_values("expected_value", ascending=False).head(limit)
-            best = top["expected_value"].idxmax() if len(top) else None
-            for idx, r in top.iterrows():
-                if float(r["expected_value"]) < MIN_EV:
-                    badge = "No bet"
-                elif idx == best:
-                    badge = "Best bet"
+            _h.append(f'<div class="sc-grp">{title}</div>')
+            for i, (_, r) in enumerate(items, start=1):
+                side = str(r.get("pick_side", "")).upper()
+                line = float(r["bet_line"])
+                if str(r["market_type"]).upper() == "SPREAD":
+                    shown = -line if side == "HOME" else line
+                    num = f"{shown:+g}"
                 else:
-                    badge = "Bet"
-                render_row(r, badge)
+                    num = f"{line:g}"
+                odds = int(r.get("odds") or -110)
+                kick = str(r.get("kickoff", "")).strip()
+                try:
+                    kick = pd.to_datetime(kick).strftime("%-I:%M %p")
+                except Exception:
+                    pass
+                _h.append(
+                    f'<div class="sc-row"><div class="sc-rank">{i}</div>'
+                    f'<div class="sc-main"><b>{_html.escape(str(r["pick_label"]))}</b>'
+                    f'<small>{_html.escape(str(r["matchup"]))}'
+                    f'{" \u00b7 " + _html.escape(kick) if kick else ""}</small></div>'
+                    f'<div class="sc-num"><b>{odds:+d}</b>'
+                    f'<span>{float(r["cover_prob"]):.0%}</span></div></div>')
 
-        if not card.empty:
-            _section("Spreads", "Strongest three, best value first.",
-                     card[card["market_type"] == "SPREAD"], 3)
-            _section("Totals", "Strongest three, best value first.",
-                     card[card["market_type"] == "TOTAL"], 3)
-
-        if _ml:
-            st.markdown('<div class="se-sec">Moneylines</div>'
-                        '<div class="cap">Shown only when the price makes '
-                        'them worth it. Not part of the tracked record.</div>',
-                        unsafe_allow_html=True)
-            for f in sorted(_ml, key=lambda r: -r["ev"])[:2]:
-                if f["ev"] < MIN_EV:
-                    continue
-                st.markdown(
-                    f'<div class="se-mlf"><div class="se-mlf-main">'
-                    f'<b>{_html.escape(f["pick"])} {f["odds"]:+d}</b>'
+        _blk("Spreads", _sp)
+        _blk("Totals", _to)
+        if _mo:
+            _h.append('<div class="sc-grp">Moneyline</div>')
+            for i, f in enumerate(_mo, start=1):
+                _h.append(
+                    f'<div class="sc-row"><div class="sc-rank">{i}</div>'
+                    f'<div class="sc-main"><b>{_html.escape(f["pick"])}</b>'
                     f'<small>{_html.escape(f["matchup"])}</small></div>'
-                    f'<div class="se-mlf-stats"><b>{f["ev"]*100:+.1f}% EV</b>'
-                    f'<span>{f["prob"]*100:.1f}% win</span></div></div>',
-                    unsafe_allow_html=True)
+                    f'<div class="sc-num"><b>{f["odds"]:+d}</b>'
+                    f'<span>{f["prob"]:.0%}</span></div></div>')
 
-        if not _bets.empty and st.button("Freeze today's bets", type="primary",
+        _h.append('<div class="sc-foot">Sunday Edge \u00b7 model leans, '
+                  'ranked by value. Not investment advice.</div></div>')
+        st.markdown("".join(_h), unsafe_allow_html=True)
+
+        _bets = card[card["bet_tier"] == "OFFICIAL"] if not card.empty else card
+        with st.expander("Detail"):
+            for _, r in (_sp + _to):
+                render_row(r, "Bet" if float(r["expected_value"]) >= MIN_EV
+                           else "Lean")
+
+        if not _bets.empty and st.button("Freeze qualifying bets",
                                          use_container_width=True):
             tr, n = freeze(_bets, load_tracker())
             st.success(f"Froze {n} new bets." if n else "Nothing new to freeze.")
-
-        st.caption(f"Ratings fit on {rt['n_prior']:,} prior games. "
-                   f"Home field {rt['hfa']:+.2f} points.")
 
 with tab_game:
     gs = sorted(sched_all["season"].unique())
