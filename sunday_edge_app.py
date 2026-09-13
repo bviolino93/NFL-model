@@ -289,19 +289,49 @@ def line_sign(g):
 # Model
 # ----------------------------------------------------------------------
 def fit_ratings(hist, teams, target, symmetric=False):
+    """
+    Home field is estimated OUTSIDE the ridge, and team ratings are rescaled
+    so predicted margins have the same spread as real ones.
+
+    Ridge penalises every coefficient, but a team appears in only 10-20 games
+    of the window while the home-field column appears in all of them. So team
+    ratings were shrunk hard and home field barely at all, which pulled every
+    prediction toward "home by 2.66". Where the market already had the home
+    side favoured that barely showed; where it had them as a dog the model
+    disagreed loudly — and the card filled with home underdogs.
+    """
     if len(hist) < 40:
         return None, None
+    y = np.asarray(hist[target].values, dtype=float)
+
+    # Constant term first, unpenalised: the league-average home margin (or
+    # average total). What is left is what the teams have to explain.
+    base = float(np.mean(y))
+    y0 = y - base
+
     idx = {t: i for i, t in enumerate(teams)}
-    X = np.zeros((len(hist), len(teams) + 1))
+    X = np.zeros((len(hist), len(teams)))
     h, a = hist["home_team"].values, hist["away_team"].values
     for r in range(len(hist)):
         if h[r] in idx:
             X[r, idx[h[r]]] = 1.0
         if a[r] in idx:
             X[r, idx[a[r]]] = 1.0 if symmetric else -1.0
-        X[r, -1] = 1.0
-    m = Ridge(alpha=RIDGE_ALPHA, fit_intercept=False).fit(X, hist[target].values)
-    return {t: m.coef_[idx[t]] for t in teams}, float(m.coef_[-1])
+
+    m = Ridge(alpha=RIDGE_ALPHA, fit_intercept=False).fit(X, y0)
+    fitted = X @ m.coef_
+
+    # Undo the compression: scale ratings so the spread of predicted margins
+    # matches the spread actually explainable, rather than sitting flat near
+    # the constant. Capped so a thin window cannot blow the ratings up.
+    sd_fit = float(np.std(fitted))
+    scale = 1.0
+    if sd_fit > 1e-6:
+        target_sd = float(np.std(y0)) * float(np.corrcoef(fitted, y0)[0, 1])
+        if np.isfinite(target_sd) and target_sd > 0:
+            scale = min(max(target_sd / sd_fit, 1.0), 2.5)
+
+    return {t: float(m.coef_[idx[t]] * scale) for t in teams}, base
 
 
 def build_ratings(sched, season, week):
