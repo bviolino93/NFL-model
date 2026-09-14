@@ -914,6 +914,47 @@ html,body,[class*="css"],.stMarkdown,.stButton button,input,select{
   letter-spacing:-.025em;color:var(--ink)}
 .se-empty p{color:var(--muted);font-size:.86rem;margin:0;line-height:1.55}
 
+/* Streamlit widgets.
+   These are forced here rather than left to config.toml: if that file is
+   missing from the repo the components render light on a dark background,
+   which is unreadable. Belt and braces. */
+h1,h2,h3,h4,h5,p,span,label,li{color:var(--ink)}
+[data-testid="stWidgetLabel"] p,[data-testid="stWidgetLabel"] label{
+  color:var(--muted)!important;font-size:.72rem!important;font-weight:700!important;
+  letter-spacing:.04em!important}
+[data-baseweb="select"] > div{background:var(--panel2)!important;
+  border:1px solid var(--line2)!important;color:var(--ink)!important;
+  border-radius:12px!important}
+[data-baseweb="select"] svg{fill:var(--muted)!important}
+[data-baseweb="popover"] li{background:var(--panel2)!important;
+  color:var(--ink)!important}
+[data-baseweb="menu"]{background:var(--panel2)!important}
+input,textarea{background:var(--panel2)!important;color:var(--ink)!important}
+[data-testid="stTabs"] button{color:var(--muted)!important;
+  font-weight:700!important}
+[data-testid="stTabs"] button[aria-selected="true"]{color:var(--ink)!important}
+[data-testid="stTabs"] [data-baseweb="tab-highlight"]{
+  background:var(--accent)!important}
+[data-testid="stCaptionContainer"] p{color:var(--muted)!important}
+[data-testid="stAlert"]{border-radius:12px!important;
+  border:1px solid var(--line2)!important;background:var(--panel)!important}
+[data-testid="stAlert"] p{color:var(--ink)!important}
+[data-testid="stExpander"] summary p{color:var(--ink)!important;
+  font-weight:700!important}
+[data-testid="stDataFrame"]{background:var(--panel)!important;
+  border:1px solid var(--line)!important;border-radius:12px!important}
+.stSlider [data-baseweb="slider"] div{background:var(--accent)!important}
+
+/* A table I control, instead of st.dataframe */
+.se-kv{width:100%;border-collapse:collapse;border:1px solid var(--line);
+  border-radius:12px;overflow:hidden;background:var(--panel);margin:6px 0 4px}
+.se-kv tr{border-bottom:1px solid var(--line)}
+.se-kv tr:last-child{border-bottom:0}
+.se-kv td{padding:11px 14px;font-size:.87rem}
+.se-kv td:first-child{color:var(--muted);font-weight:600}
+.se-kv td:last-child{text-align:right;color:var(--ink);font-weight:700;
+  font-variant-numeric:tabular-nums}
+
 /* Streamlit widgets */
 .stButton button{border-radius:12px!important;font-weight:800!important;
   letter-spacing:-.01em!important;border:1px solid var(--line2)!important}
@@ -1236,29 +1277,51 @@ with tab_game:
         def verdict_block(label, edge, p, e, lean, mkt, model, sd, unit):
             """Answer first. The arithmetic is available but folded away —
             on a phone the derivation was burying the actual call."""
-            st.markdown(f"### {label}")
-            if e is not None and e >= MIN_EV:
-                st.success(f"Bet {lean}. Value {e:+.2%}.")
+            st.markdown(f'<div class="se-sec">{label}</div>',
+                        unsafe_allow_html=True)
+            # Same rule and same words as the card. This used to judge on
+            # expected value while the card judged on points of disagreement,
+            # so a game could be "no bet" here and on the card at the same
+            # time.
+            _gap = abs(model - mkt)
+            if _gap >= MIN_GAP_PTS:
+                st.success(
+                    f"**On the card \u2014 {lean}.** The model is "
+                    f"{_gap:.1f} points off the line."
+                )
             else:
-                # Neutral, not red: no bet is the correct answer most weeks.
-                st.info(f"No bet. Value {e:+.2%}. The model leans {lean}.")
+                st.info(
+                    f"**Not on the card.** The model leans {lean} but sits "
+                    f"only {_gap:.1f} points off the line; the card takes "
+                    f"{MIN_GAP_PTS:g}+."
+                )
             # Say it in words. The model works in margins (positive = home
             # team ahead) while a book quotes handicaps (KC -2.5 = KC gives
             # 2.5). Same fact, opposite sign, and nothing on screen said
             # which convention you were reading.
-            st.dataframe(
-                pd.DataFrame({
-                    "": ["Market says", "Model says", "Disagreement",
-                         "Edge after blend", "Cover probability"],
-                    " ": [_say(mkt, unit), _say(model, unit),
-                          f"{abs(model - mkt):.2f} pts apart",
-                          f"{edge:+.2f} pts", f"{p:.1%}"],
-                }), hide_index=True, use_container_width=True)
-            with st.expander("Show the arithmetic"):
+            # Three rows. Edge-after-blend and cover probability moved into
+            # the expander: they explain the pricing, they do not answer
+            # "is this on the card".
+            _kv = [("Market says", _say(mkt, unit)),
+                   ("Model says", _say(model, unit)),
+                   ("Apart", f"{abs(model - mkt):.1f} pts")]
+            st.markdown(
+                '<table class="se-kv">'
+                + "".join(f"<tr><td>{_html.escape(k)}</td>"
+                          f"<td>{_html.escape(str(v))}</td></tr>"
+                          for k, v in _kv)
+                + "</table>", unsafe_allow_html=True)
+            with st.expander("Pricing detail"):
+                st.markdown(
+                    '<table class="se-kv">'
+                    f'<tr><td>Edge after blend</td><td>{edge:+.2f} pts</td></tr>'
+                    f'<tr><td>Cover probability</td><td>{p:.1%}</td></tr>'
+                    f'<tr><td>Value at this price</td><td>{e:+.2%}</td></tr>'
+                    '</table>', unsafe_allow_html=True)
                 st.write(
                     f"The model line comes from the two power ratings plus "
-                    f"home field. It is then blended toward the market at "
-                    f"{MODEL_WEIGHT}, the weight the backtest earned:"
+                    f"home field, then blended toward the market at "
+                    f"{MODEL_WEIGHT} \u2014 the weight it earned in backtest:"
                 )
                 st.code(
                     f"blended fair = {mkt:.2f} + {MODEL_WEIGHT} x "
