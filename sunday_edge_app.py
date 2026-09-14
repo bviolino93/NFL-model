@@ -1333,7 +1333,9 @@ with tab_game:
             mkt = sign * float(row["spread_line"])
             fair = mkt + MODEL_WEIGHT * (raw - mkt)
             edge = fair - mkt
-            lean = h if edge > 0 else a
+            # State the actual bet, not just the team: the side plus the
+            # number, from that side's perspective.
+            lean = (f"{h} {-mkt:+g}" if edge > 0 else f"{a} {mkt:+g}")
             verdict_block("Spread", edge, norm_cdf(abs(edge) / SD_MARGIN),
                           ev_from_prob(norm_cdf(abs(edge) / SD_MARGIN)),
                           lean, mkt, raw, SD_MARGIN, "margin")
