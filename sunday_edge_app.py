@@ -849,15 +849,23 @@ with tab_slate:
     weeks = sorted(sched_all[sched_all["season"] == season]["week"].unique())
     week = c2.selectbox("Week", weeks, index=min(len(weeks) - 1, 0))
 
-    if not st.button("Run Sunday card", type="primary",
-                     use_container_width=True):
-        st.caption("Pick the week above, then run.")
-        st.stop()
+    # st.stop() here would halt the WHOLE script, not just this tab, so the
+    # Game and Tracker tabs rendered blank until the card was run. Use a flag.
+    if st.button("Run Sunday card", type="primary", use_container_width=True):
+        st.session_state["se_ran"] = True
+    _ran = bool(st.session_state.get("se_ran"))
 
-    card, rt = build_card(sched_all, season, week, sign, offers=live_offers)
+    if not _ran:
+        st.caption("Pick the week above, then run.")
+        card, rt = pd.DataFrame(), None
+    else:
+        card, rt = build_card(sched_all, season, week, sign,
+                              offers=live_offers)
     st.markdown(CARD_CSS, unsafe_allow_html=True)
 
-    if rt is None:
+    if not _ran:
+        pass
+    elif rt is None:
         st.info("Not enough completed games yet to build ratings.")
     else:
         # An NFL week runs Thursday to Monday. The card is for ONE day, and
@@ -868,40 +876,62 @@ with tab_slate:
             card = card.assign(_kick=_k)
             card = card[card["_kick"].notna() & (card["_kick"] > _now)]
 
-        if card.empty:
-            st.info("No games left to play in this week.")
-            st.stop()
+        _ok = not card.empty
+        if not _ok:
+            st.info(
+                "Every game in this week has kicked off. Pick a later week "
+                "above."
+            )
 
-        _days = sorted(card["_kick"].dt.date.unique())
-        _day = st.selectbox(
-            "Day", _days, index=0,
-            format_func=lambda d: pd.Timestamp(d).strftime("%A, %b %-d"),
-        )
-        card = card[card["_kick"].dt.date == _day]
-        if card.empty:
-            st.info("Nothing left on that day.")
-            st.stop()
+        _days = sorted(card["_kick"].dt.date.unique()) if _ok else []
+        _day = None
+        if _ok:
+            _day = st.selectbox(
+                "Day", _days, index=0,
+                format_func=lambda d: pd.Timestamp(d).strftime("%A, %b %-d"),
+            )
+            card = card[card["_kick"].dt.date == _day]
+            _ok = not card.empty
 
-        _ml = [f for f in (ml_flags(sched_all, season, week, rt, sign,
-                                    live_offers) or [])
-               if str(f.get("matchup")) in set(card["matchup"])]
-        _kick = pd.Timestamp(_day).strftime("%A, %b %-d")
+        _ml = ([f for f in (ml_flags(sched_all, season, week, rt, sign,
+                                     live_offers) or [])
+                if str(f.get("matchup")) in set(card["matchup"])]
+               if _ok else [])
+        _kick = (pd.Timestamp(_day).strftime("%A, %b %-d")
+                 if _day is not None else f"Week {week}")
 
-        def _rows(df, limit):
+        def _rows(df):
+            """
+            Every market that clears the bar, not a fixed top three. If none
+            do, fall back to the three strongest so the card is never blank —
+            those are labelled leans in the footer, not bets.
+            """
             if df.empty:
-                return []
-            return list(df.sort_values("expected_value",
-                                       ascending=False).head(limit).iterrows())
+                return [], 0
+            d = df.sort_values("expected_value", ascending=False)
+            q = d[pd.to_numeric(d["expected_value"], errors="coerce").fillna(-9)
+                  >= MIN_EV]
+            if len(q):
+                return list(q.iterrows()), len(q)
+            return list(d.head(3).iterrows()), 0
 
-        _sp = _rows(card[card["market_type"] == "SPREAD"], 3)
-        _to = _rows(card[card["market_type"] == "TOTAL"], 3)
+        _sp, _nsp = _rows(card[card["market_type"] == "SPREAD"])
+        _to, _nto = _rows(card[card["market_type"] == "TOTAL"])
         _mo = sorted([f for f in _ml if f["ev"] >= MIN_EV],
-                     key=lambda r: -r["ev"])[:2]
+                     key=lambda r: -r["ev"])
+        _nq = _nsp + _nto + len(_mo)
         _n = len(_sp) + len(_to) + len(_mo)
+        _total_markets = len(card)
 
+        _sub = (f"{_html.escape(_kick)} \u00b7 {_nq} of {_total_markets} "
+                f"markets qualify"
+                if _nq else
+                f"{_html.escape(_kick)} \u00b7 none of {_total_markets} "
+                f"markets qualify \u2014 strongest leans shown")
         _h = [f'<div class="sc-wrap">'
-              f'<div class="sc-top"><h2>Top picks</h2>'
-              f'<span>{_html.escape(_kick)} \u00b7 {_n} plays</span></div>']
+              f'<div class="sc-top"><h2>'
+              f'{"Top picks" if _nq else "Strongest leans"}</h2>'
+              f'<span>{_sub}</span></div>']
 
         def _blk(title, items):
             if not items:
@@ -929,11 +959,11 @@ with tab_slate:
                     f'<div class="sc-num"><b>{odds:+d}</b>'
                     f'<span>{float(r["cover_prob"]):.0%}</span></div></div>')
 
-        _blk("Spreads", _sp)
-        _blk("Totals", _to)
+        _blk(f"Spreads ({_nsp})" if _nsp else "Spreads", _sp)
+        _blk(f"Totals ({_nto})" if _nto else "Totals", _to)
         if _mo:
             _h.append('<div class="sc-grp">Moneyline</div>')
-            for i, f in enumerate(_mo, start=1):
+            for i, f in enumerate(_mo[:4], start=1):
                 _h.append(
                     f'<div class="sc-row"><div class="sc-rank">{i}</div>'
                     f'<div class="sc-main"><b>{_html.escape(f["pick"])}</b>'
@@ -941,8 +971,12 @@ with tab_slate:
                     f'<div class="sc-num"><b>{f["odds"]:+d}</b>'
                     f'<span>{f["prob"]:.0%}</span></div></div>')
 
-        _h.append('<div class="sc-foot">Sunday Edge \u00b7 model leans, '
-                  'ranked by value. Not investment advice.</div></div>')
+        _h.append(
+            '<div class="sc-foot">Sunday Edge \u00b7 '
+            + ('every market clearing the value bar, ranked.'
+               if _nq else
+               'nothing clears the bar today \u2014 these are leans, not bets.')
+            + '</div></div>')
         st.markdown("".join(_h), unsafe_allow_html=True)
 
         _bets = card[card["bet_tier"] == "OFFICIAL"] if not card.empty else card
