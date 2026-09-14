@@ -1285,16 +1285,9 @@ with tab_game:
             # time.
             _gap = abs(model - mkt)
             if _gap >= MIN_GAP_PTS:
-                st.success(
-                    f"**On the card \u2014 {lean}.** The model is "
-                    f"{_gap:.1f} points off the line."
-                )
+                st.success(f"**Bet {lean}.**")
             else:
-                st.info(
-                    f"**Not on the card.** The model leans {lean} but sits "
-                    f"only {_gap:.1f} points off the line; the card takes "
-                    f"{MIN_GAP_PTS:g}+."
-                )
+                st.info("**Don't bet.**")
             # Say it in words. The model works in margins (positive = home
             # team ahead) while a book quotes handicaps (KC -2.5 = KC gives
             # 2.5). Same fact, opposite sign, and nothing on screen said
