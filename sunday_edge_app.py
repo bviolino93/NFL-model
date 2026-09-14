@@ -188,8 +188,23 @@ def fetch_live_odds(_bust=0):
     key = None
     try:
         key = st.secrets["odds_api_key"]
-    except Exception:
-        return {}, None, "no key"
+    except Exception as e:
+        # Distinguish the three ways this fails, because they have different
+        # fixes: no secrets at all, a malformed secrets file (which makes
+        # EVERY lookup throw, not just this one), or the wrong key name.
+        try:
+            _names = list(st.secrets.keys())
+        except Exception:
+            return {}, None, ("secrets unreadable \u2014 the file is not valid "
+                              f"TOML ({type(e).__name__}). Every value must be "
+                              "quoted: odds_api_key = \"abc123\"")
+        if not _names:
+            return {}, None, "no secrets set for this app"
+        return {}, None, (f"no odds_api_key found. Keys present: "
+                          f"{', '.join(map(str, _names))}")
+    key = str(key).strip()
+    if not key:
+        return {}, None, "odds_api_key is empty"
     try:
         r = requests.get(
             "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds",
@@ -198,8 +213,14 @@ def fetch_live_odds(_bust=0):
                     "oddsFormat": "american"},
             timeout=20,
         )
+        if r.status_code == 401:
+            return {}, None, (
+                f"the key was sent but rejected (401). It is {len(key)} "
+                f"characters and starts {key[:4]}\u2026 \u2014 check it "
+                f"against the-odds-api.com, and that the trial has not run out."
+            )
         if r.status_code != 200:
-            return {}, None, f"HTTP {r.status_code}: {r.text[:120]}"
+            return {}, None, f"HTTP {r.status_code}: {r.text[:160]}"
         left = r.headers.get("x-requests-remaining")
         offers = {}
         for ev in r.json():
