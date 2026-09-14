@@ -278,12 +278,18 @@ def lookup_offers(offers, away, home):
 
 def best_offer(cands, fair, sd):
     """
+    cands: (tag, threshold, price, book). The TAG is returned with the
+    winner — re-deriving which side won from the threshold is ambiguous,
+    because KC -2.5 and DEN +2.5 both reduce to a threshold of +2.5, so the
+    lookup always matched the home offer and mislabelled away picks.
+    """
+    """
     Line shopping done properly: price every book's actual point AND price,
     then take the highest EV. Best number and best price are often at
     different books, so picking on either one alone leaves money behind.
     """
     best = None
-    for side, thresh, price, book in cands:
+    for tag, side, thresh, price, book in cands:
         edge = (fair - thresh) if side == "OVER_LIKE" else (thresh - fair)
         p = norm_cdf(edge / sd)
         e = ev_from_prob(p, price)
@@ -291,7 +297,7 @@ def best_offer(cands, fair, sd):
             continue
         if best is None or e > best["ev"]:
             best = {"ev": e, "cover": p, "edge": edge, "point": thresh,
-                    "price": price, "book": book}
+                    "price": price, "book": book, "tag": tag}
     return best
 
 
@@ -442,15 +448,13 @@ def build_card(sched, season, week, sign, offers=None):
                 mkt = float(np.median(pts))
             fair = mkt + MODEL_WEIGHT * (raw_model - mkt)
             # Home side covers above -point; away side covers below +point.
-            cands = [("OVER_LIKE" if t == h else "UNDER_LIKE",
+            cands = [(("HOME" if t == h else "AWAY"),
+                      ("OVER_LIKE" if t == h else "UNDER_LIKE"),
                       (-p if t == h else p), pr, bk)
                      for t, p, pr, bk in live["spreads"]]
             b = best_offer(cands, fair, SD_MARGIN)
             if b:
-                side = "HOME" if b["edge"] > 0 or b["point"] < 0 else "AWAY"
-                # Recover which team the winning offer belongs to
-                side = "HOME" if any(t == h and -p == b["point"] and pr == b["price"]
-                                     for t, p, pr, bk in live["spreads"]) else "AWAY"
+                side = b["tag"]
                 team = h if side == "HOME" else a
                 shown = -b["point"] if side == "HOME" else b["point"]
                 rows.append({
@@ -493,13 +497,12 @@ def build_card(sched, season, week, sign, offers=None):
             pts = [p for _, p, _, _ in live["totals"]]
             mt = float(np.median(pts))
             fair_t = mt + MODEL_WEIGHT * (raw_total - mt)
-            cands = [("OVER_LIKE" if nm == "OVER" else "UNDER_LIKE", p, pr, bk)
+            cands = [(nm, ("OVER_LIKE" if nm == "OVER" else "UNDER_LIKE"),
+                      p, pr, bk)
                      for nm, p, pr, bk in live["totals"]]
             b = best_offer(cands, fair_t, SD_TOTAL)
             if b:
-                side = "OVER" if b["edge"] > 0 else "UNDER"
-                side = next((nm for nm, p, pr, bk in live["totals"]
-                             if p == b["point"] and pr == b["price"]), side)
+                side = b["tag"]
                 rows.append({
                     "game_id": g["game_id"], "season": season, "week": week,
                     "kickoff": f"{g.get('gameday','')} {g.get('gametime','')}".strip(),
@@ -952,7 +955,9 @@ with tab_slate:
                      key=lambda r: -r["ev"])
         _nq = _nsp + _nto + len(_mo)
         _n = len(_sp) + len(_to) + len(_mo)
-        _total_markets = len(card)
+        # Moneylines count in the numerator, so they must count in the
+        # denominator too — otherwise "3 of 2 markets qualify".
+        _total_markets = len(card) + len(_ml)
 
         _sub = (f"{_html.escape(_kick)} \u00b7 {_nq} of {_total_markets} "
                 f"markets qualify"
