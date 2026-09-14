@@ -185,9 +185,19 @@ def fetch_live_odds(_bust=0):
     Live spreads and totals from every US book, kept as raw offers so the
     card can price each one. Returns (offers, credits_left, error).
     """
+    # Streamlit secrets are case-sensitive, and ODDS_API_KEY is the more
+    # natural thing to type. Accept any common spelling rather than making
+    # the name the thing that breaks it.
     key = None
     try:
-        key = st.secrets["odds_api_key"]
+        _sec = st.secrets
+        for _n in ("odds_api_key", "ODDS_API_KEY", "oddsApiKey",
+                   "odds_api", "ODDS_API"):
+            if _n in _sec:
+                key = _sec[_n]
+                break
+        if key is None:
+            raise KeyError("odds_api_key")
     except Exception as e:
         # Distinguish the three ways this fails, because they have different
         # fixes: no secrets at all, a malformed secrets file (which makes
