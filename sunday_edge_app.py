@@ -31,6 +31,44 @@ import requests
 
 import nfl_data_py as nfl
 
+# Stadium coordinates, and whether the venue is exposed to weather.
+# Retractable roofs are treated as outdoor: the roof is usually open in
+# fair weather and closed in bad, which is conservative here.
+STADIUM = {
+    "ARI": (33.528, -112.263, False), "ATL": (33.755, -84.401, False),
+    "BAL": (39.278, -76.623, True),   "BUF": (42.774, -78.787, True),
+    "CAR": (35.226, -80.853, True),   "CHI": (41.863, -87.617, True),
+    "CIN": (39.095, -84.516, True),   "CLE": (41.506, -81.699, True),
+    "DAL": (32.748, -97.093, False),  "DEN": (39.744, -105.020, True),
+    "DET": (42.340, -83.046, False),  "GB":  (44.501, -88.062, True),
+    "HOU": (29.685, -95.411, False),  "IND": (39.760, -86.164, False),
+    "JAX": (30.324, -81.637, True),   "KC":  (39.049, -94.484, True),
+    "LA":  (33.953, -118.339, False), "LAR": (33.953, -118.339, False),
+    "LAC": (33.953, -118.339, False), "LV":  (36.091, -115.183, False),
+    "MIA": (25.958, -80.239, True),   "MIN": (44.974, -93.258, False),
+    "NE":  (42.091, -71.264, True),   "NO":  (29.951, -90.081, False),
+    "NYG": (40.814, -74.074, True),   "NYJ": (40.814, -74.074, True),
+    "PHI": (39.901, -75.168, True),   "PIT": (40.447, -80.016, True),
+    "SEA": (47.595, -122.332, True),  "SF":  (37.403, -121.970, True),
+    "TB":  (27.976, -82.503, True),   "TEN": (36.166, -86.771, True),
+    "WAS": (38.908, -76.864, True),
+}
+
+# Points off the total per mph of wind, measured on 3,551 outdoor games.
+# The effect held out of sample (-0.185 before 2016, -0.214 after) and
+# survived realistic forecast error, though at roughly 40% of its
+# perfect-knowledge size — hence the discount below.
+WIND_PTS_PER_MPH = -0.196
+
+# Forecast error haircut. With actual wind the holdout ROI was +8.2%; with
+# a realistic +/-3.5 mph forecast error it was +3.3%. Taking the full
+# coefficient would price an accuracy you do not have.
+WIND_FORECAST_DISCOUNT = 0.40
+
+# Below this the effect is noise and the market has it priced anyway.
+WIND_MIN_MPH = 8.0
+
+
 # Odds API full names -> nflverse abbreviations.
 ODDS_TEAM = {
     "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL",
@@ -179,6 +217,52 @@ def save_tracker(df):
 # ----------------------------------------------------------------------
 # Data
 # ----------------------------------------------------------------------
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def fetch_wind(home_team, kickoff_iso):
+    """
+    Forecast wind at the stadium for the hour of kickoff. Open-Meteo is free
+    and needs no key. Returns mph, or None for domes and failures.
+    """
+    st_info = STADIUM.get(str(home_team).upper())
+    if not st_info:
+        return None
+    lat, lon, outdoor = st_info
+    if not outdoor:
+        return 0.0
+    try:
+        kt = pd.to_datetime(kickoff_iso)
+        if pd.isna(kt):
+            return None
+        r = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={"latitude": lat, "longitude": lon,
+                    "hourly": "wind_speed_10m",
+                    "wind_speed_unit": "mph",
+                    "start_date": kt.strftime("%Y-%m-%d"),
+                    "end_date": kt.strftime("%Y-%m-%d"),
+                    "timezone": "America/New_York"},
+            timeout=12,
+        )
+        if r.status_code != 200:
+            return None
+        h = r.json().get("hourly", {})
+        times = pd.to_datetime(pd.Series(h.get("time", [])))
+        speeds = h.get("wind_speed_10m", [])
+        if not len(times) or not speeds:
+            return None
+        i = int((times - kt.tz_localize(None)).abs().idxmin())
+        return float(speeds[i])
+    except Exception:
+        return None
+
+
+def wind_adjustment(mph):
+    """Points to subtract from the market total, after the forecast haircut."""
+    if mph is None or mph < WIND_MIN_MPH:
+        return 0.0
+    return WIND_PTS_PER_MPH * float(mph) * WIND_FORECAST_DISCOUNT
+
+
 @st.cache_data(show_spinner=False, ttl=60 * 10)
 def fetch_live_odds(_bust=0):
     """
@@ -496,7 +580,14 @@ def build_card(sched, season, week, sign, offers=None):
             raw_total = rt["total"].get(h, 0.0) + rt["total"].get(a, 0.0) + rt["tbase"]
             pts = [p for _, p, _, _ in live["totals"]]
             mt = float(np.median(pts))
-            fair_t = mt + MODEL_WEIGHT * (raw_total - mt)
+            # Wind adjusts the FAIR line directly rather than going through
+            # the 0.099 blend. That blend is the discount for a power rating
+            # that showed no edge; wind was measured against the closing line
+            # and survived out of sample, so it is a different kind of claim
+            # and takes its own (forecast-error) haircut instead.
+            _mph = fetch_wind(h, f"{g.get('gameday','')} {g.get('gametime','')}")
+            _wadj = wind_adjustment(_mph)
+            fair_t = mt + MODEL_WEIGHT * (raw_total - mt) + _wadj
             cands = [(nm, ("OVER_LIKE" if nm == "OVER" else "UNDER_LIKE"),
                       p, pr, bk)
                      for nm, p, pr, bk in live["totals"]]
@@ -508,8 +599,11 @@ def build_card(sched, season, week, sign, offers=None):
                     "kickoff": f"{g.get('gameday','')} {g.get('gametime','')}".strip(),
                     "matchup": f"{a} @ {h}", "home_team": h, "away_team": a,
                     "market_type": "TOTAL", "pick_side": side,
+                    "wind_mph": _mph, "wind_adj": _wadj,
                     "pick_label": f"{side.title()} {b['point']:g} "
-                                  f"({b['price']:+.0f}) @ {b['book']}",
+                                  f"({b['price']:+.0f}) @ {b['book']}"
+                                  + (f" \u00b7 {_mph:.0f}mph wind"
+                                     if _wadj else ""),
                     "bet_line": float(b["point"]), "model_line": float(raw_total),
                     "edge_pts": float(b["edge"]), "cover_prob": b["cover"],
                     "expected_value": b["ev"], "odds": b["price"],
@@ -542,11 +636,13 @@ def build_card(sched, season, week, sign, offers=None):
     card = card.sort_values("abs_edge", ascending=False).reset_index(drop=True)
     # Tiers are FILTERS, not quotas. If nothing clears the floor the
     # section is empty, which is a legitimate answer for a week.
-    # Everything stays on the card so there is always something to look at.
-    # The EV gate decides which rows are BETS, not which rows exist.
-    card["bet_tier"] = np.where(
-        pd.to_numeric(card["expected_value"], errors="coerce").fillna(-9)
-        >= MIN_EV, "OFFICIAL", "PASS")
+    # The card ranks by how far the model is from the line. EV is still
+    # computed and shown on every row, but it is no longer a gate: a card
+    # that says "no bets" most weeks does not answer the question this app
+    # exists to answer, which is whether these picks land on the right side
+    # more than 52.4% of the time. That gets settled by the record, not by
+    # a threshold.
+    card["bet_tier"] = "OFFICIAL"
     return card[card["bet_tier"].notna()].copy(), rt
 
 
@@ -885,12 +981,15 @@ with tab_slate:
 
     # st.stop() here would halt the WHOLE script, not just this tab, so the
     # Game and Tracker tabs rendered blank until the card was run. Use a flag.
-    if st.button("Run Sunday card", type="primary", use_container_width=True):
+    if st.button("Build card", type="primary", use_container_width=True):
         st.session_state["se_ran"] = True
     _ran = bool(st.session_state.get("se_ran"))
 
     if not _ran:
-        st.caption("Pick the week above, then run.")
+        st.caption(
+            "Pick the week, then build. Thursday, Sunday and Monday games "
+            "each get their own card \u2014 choose the day below."
+        )
         card, rt = pd.DataFrame(), None
     else:
         card, rt = build_card(sched_all, season, week, sign,
@@ -913,8 +1012,8 @@ with tab_slate:
         _ok = not card.empty
         if not _ok:
             st.info(
-                "Every game in this week has kicked off. Pick a later week "
-                "above."
+                "Every game in this week has kicked off \u2014 Thursday "
+                "through Monday. Pick a later week above."
             )
 
         _days = sorted(card["_kick"].dt.date.unique()) if _ok else []
@@ -923,6 +1022,7 @@ with tab_slate:
             _day = st.selectbox(
                 "Day", _days, index=0,
                 format_func=lambda d: pd.Timestamp(d).strftime("%A, %b %-d"),
+                help="Every day in this week that still has games to play.",
             )
             card = card[card["_kick"].dt.date == _day]
             _ok = not card.empty
@@ -934,40 +1034,27 @@ with tab_slate:
         _kick = (pd.Timestamp(_day).strftime("%A, %b %-d")
                  if _day is not None else f"Week {week}")
 
-        def _rows(df):
-            """
-            Every market that clears the bar, not a fixed top three. If none
-            do, fall back to the three strongest so the card is never blank —
-            those are labelled leans in the footer, not bets.
-            """
+        def _rows(df, n=3):
+            """Top n by how far the model is from the line."""
             if df.empty:
                 return [], 0
-            d = df.sort_values("expected_value", ascending=False)
-            q = d[pd.to_numeric(d["expected_value"], errors="coerce").fillna(-9)
-                  >= MIN_EV]
-            if len(q):
-                return list(q.iterrows()), len(q)
-            return list(d.head(3).iterrows()), 0
+            d = df.assign(_gap=pd.to_numeric(df["edge_pts"],
+                                             errors="coerce").abs())
+            d = d.sort_values("_gap", ascending=False).head(n)
+            return list(d.iterrows()), len(d)
 
         _sp, _nsp = _rows(card[card["market_type"] == "SPREAD"])
         _to, _nto = _rows(card[card["market_type"] == "TOTAL"])
-        _mo = sorted([f for f in _ml if f["ev"] >= MIN_EV],
-                     key=lambda r: -r["ev"])
+        _mo = sorted(_ml, key=lambda r: -r["ev"])[:2]
         _nq = _nsp + _nto + len(_mo)
         _n = len(_sp) + len(_to) + len(_mo)
         # Moneylines count in the numerator, so they must count in the
         # denominator too — otherwise "3 of 2 markets qualify".
         _total_markets = len(card) + len(_ml)
 
-        _sub = (f"{_html.escape(_kick)} \u00b7 {_nq} of {_total_markets} "
-                f"markets qualify"
-                if _nq else
-                f"{_html.escape(_kick)} \u00b7 none of {_total_markets} "
-                f"markets qualify \u2014 strongest leans shown")
         _h = [f'<div class="sc-wrap">'
-              f'<div class="sc-top"><h2>'
-              f'{"Top picks" if _nq else "Strongest leans"}</h2>'
-              f'<span>{_sub}</span></div>']
+              f'<div class="sc-top"><h2>Top picks</h2>'
+              f'<span>{_html.escape(_kick)} \u00b7 {_n} plays</span></div>']
 
         def _blk(title, items):
             if not items:
@@ -995,8 +1082,8 @@ with tab_slate:
                     f'<div class="sc-num"><b>{odds:+d}</b>'
                     f'<span>{float(r["cover_prob"]):.0%}</span></div></div>')
 
-        _blk(f"Spreads ({_nsp})" if _nsp else "Spreads", _sp)
-        _blk(f"Totals ({_nto})" if _nto else "Totals", _to)
+        _blk("Spreads", _sp)
+        _blk("Totals", _to)
         if _mo:
             _h.append('<div class="sc-grp">Moneyline</div>')
             for i, f in enumerate(_mo[:4], start=1):
@@ -1007,12 +1094,8 @@ with tab_slate:
                     f'<div class="sc-num"><b>{f["odds"]:+d}</b>'
                     f'<span>{f["prob"]:.0%}</span></div></div>')
 
-        _h.append(
-            '<div class="sc-foot">Sunday Edge \u00b7 '
-            + ('every market clearing the value bar, ranked.'
-               if _nq else
-               'nothing clears the bar today \u2014 these are leans, not bets.')
-            + '</div></div>')
+        _h.append('<div class="sc-foot">Sunday Edge \u00b7 ranked by how far '
+                  'the model sits from the line.</div></div>')
         st.markdown("".join(_h), unsafe_allow_html=True)
 
         _bets = card[card["bet_tier"] == "OFFICIAL"] if not card.empty else card
@@ -1049,6 +1132,17 @@ with tab_game:
         hfa = rt_g["hfa"]
         raw = rh - ra + hfa
 
+        def _say(v, unit):
+            """A margin as plain English, so there is no sign to misread."""
+            if unit == "total":
+                return f"{v:.1f} points"
+            fav, dog = h, a
+            if v < 0:
+                fav, dog = a, h
+            if abs(v) < 0.05:
+                return "dead even"
+            return f"{fav} by {abs(v):.1f}"
+
         def verdict_block(label, edge, p, e, lean, mkt, model, sd, unit):
             """Answer first. The arithmetic is available but folded away —
             on a phone the derivation was burying the actual call."""
@@ -1058,13 +1152,16 @@ with tab_game:
             else:
                 # Neutral, not red: no bet is the correct answer most weeks.
                 st.info(f"No bet. Value {e:+.2%}. The model leans {lean}.")
+            # Say it in words. The model works in margins (positive = home
+            # team ahead) while a book quotes handicaps (KC -2.5 = KC gives
+            # 2.5). Same fact, opposite sign, and nothing on screen said
+            # which convention you were reading.
             st.dataframe(
                 pd.DataFrame({
-                    "": [f"Market ({unit})", f"Model ({unit})",
-                         "Disagreement", "Edge after blend",
-                         "Cover probability"],
-                    " ": [f"{mkt:+.1f}", f"{model:+.1f}",
-                          f"{model - mkt:+.2f} pts",
+                    "": ["Market says", "Model says", "Disagreement",
+                         "Edge after blend", "Cover probability"],
+                    " ": [_say(mkt, unit), _say(model, unit),
+                          f"{abs(model - mkt):.2f} pts apart",
                           f"{edge:+.2f} pts", f"{p:.1%}"],
                 }), hide_index=True, use_container_width=True)
             with st.expander("Show the arithmetic"):
@@ -1093,8 +1190,7 @@ with tab_game:
             lean = h if edge > 0 else a
             verdict_block("Spread", edge, norm_cdf(abs(edge) / SD_MARGIN),
                           ev_from_prob(norm_cdf(abs(edge) / SD_MARGIN)),
-                          lean, mkt, raw, SD_MARGIN,
-                          f"{h} margin")
+                          lean, mkt, raw, SD_MARGIN, "margin")
         else:
             st.info("No spread posted for this game.")
 
@@ -1106,7 +1202,7 @@ with tab_game:
             lean = f"Over {mt:g}" if edge_t > 0 else f"Under {mt:g}"
             verdict_block("Total", edge_t, norm_cdf(abs(edge_t) / SD_TOTAL),
                           ev_from_prob(norm_cdf(abs(edge_t) / SD_TOTAL)),
-                          lean, mt, raw_t, SD_TOTAL, "points")
+                          lean, mt, raw_t, SD_TOTAL, "total")
         else:
             st.info("No total posted for this game.")
 
@@ -1128,6 +1224,37 @@ with tab_tracker:
             st.caption(f"Reason: {err}")
     else:
         st.caption("Storage: Google Sheets — history is saved permanently.")
+
+    # THE question: are these picks on the right side more than 52.4% of
+    # the time? Reported with its own error bar, because a hit rate from a
+    # small number of bets is not an answer.
+    _g = tr[tr["result"].isin(["WIN", "LOSS"])] if not tr.empty else tr
+    if len(_g):
+        _w = int((_g["result"] == "WIN").sum())
+        _n = len(_g)
+        _rate = _w / _n
+        _se = (0.25 / _n) ** 0.5
+        st.markdown("### Right side, how often?")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Hit rate", f"{_rate:.1%}")
+        c2.metric("Breakeven", "52.4%")
+        c3.metric("Graded", f"{_n}")
+        _lo, _hi = _rate - 1.96 * _se, _rate + 1.96 * _se
+        st.caption(
+            f"95% range given {_n} bets: {_lo:.1%} to {_hi:.1%}. "
+            + ("Breakeven sits inside that range, so this does not yet "
+               "distinguish a real edge from chance."
+               if _lo <= 0.524 <= _hi else
+               ("Breakeven is below the range \u2014 a real edge at this "
+                "sample size." if _lo > 0.524 else
+                "Breakeven is above the range \u2014 these picks are losing "
+                "by more than variance explains."))
+        )
+        _need = int(0.25 * (1.96 / max(abs(_rate - 0.524), 0.005)) ** 2)
+        st.caption(
+            f"To separate a {_rate:.1%} hit rate from breakeven with "
+            f"confidence you would need roughly {_need:,} graded bets."
+        )
 
     if tr.empty:
         st.info("No bets frozen yet.")
