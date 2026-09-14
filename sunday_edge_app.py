@@ -170,10 +170,23 @@ st.set_page_config(page_title="Sunday Edge", page_icon="🏈", layout="wide")
 def _sheet(return_error=False):
     try:
         import gspread
-        raw = st.secrets["gcp_service_account_json"]
+        # Secrets are case-sensitive; accept the usual spellings rather than
+        # letting the name be the thing that breaks it.
+        raw = None
+        for _n in ("gcp_service_account_json", "GCP_SERVICE_ACCOUNT_JSON",
+                   "gcp_service_account", "GCP_SERVICE_ACCOUNT"):
+            if _n in st.secrets:
+                raw = st.secrets[_n]
+                break
+        if raw is None:
+            raise KeyError("gcp_service_account_json")
         creds = json.loads(raw) if isinstance(raw, str) else dict(raw)
         gc = gspread.service_account_from_dict(creds)
-        name = st.secrets.get("tracker_sheet_name", "sunday_edge_tracker")
+        name = "sunday_edge_tracker"
+        for _n in ("tracker_sheet_name", "TRACKER_SHEET_NAME"):
+            if _n in st.secrets:
+                name = str(st.secrets[_n])
+                break
         sh = gc.open(name)
         try:
             ws = sh.worksheet("tracker")
@@ -1172,7 +1185,16 @@ with tab_slate:
 
         _sp, _nsp = _rows(card[card["market_type"] == "SPREAD"])
         _to, _nto = _rows(card[card["market_type"] == "TOTAL"])
-        _mo = sorted(_ml, key=lambda r: -r["ev"])[:2]
+        # Moneylines keep the EV test. Spreads and totals are ranked by
+        # disagreement because both sides of those are playable at the same
+        # number; a moneyline has no number, so the only thing separating
+        # the two sides is price. Without this the card showed DEN +110 and
+        # KC -135 on the same game, which cannot both be bets.
+        _mo = sorted([f for f in _ml if f["ev"] >= MIN_EV],
+                     key=lambda r: -r["ev"])[:2]
+        _seen = set()
+        _mo = [f for f in _mo
+               if not (f["matchup"] in _seen or _seen.add(f["matchup"]))]
         _shown = len(_sp) + len(_to)
         _nq = _nsp + _nto + len(_mo)
         _n = len(_sp) + len(_to) + len(_mo)
