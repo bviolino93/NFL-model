@@ -789,86 +789,155 @@ def ml_flags(sched, season, week, rt, sign, offers):
 # ----------------------------------------------------------------------
 CARD_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap');
 
+/* Dark navy, blue accent, heavy display type — the same language as the
+   college app, so the two read as one product. */
 :root{
-  --ink:#12171F; --muted:#6B7683; --faint:#9AA3AE;
-  --line:#E4E9F0; --rail:#F6F8FA;
-  --go:#0F7B4F; --go-bg:#E8F4EE;
-  --hold:#8A6100; --hold-bg:#FBF3E2;
-  --off:#7A838F; --off-bg:#F1F3F6; --loss:#A62B2B;
+  --bg:#0A1020; --panel:#111A2E; --panel2:#16213A;
+  --line:rgba(116,151,183,.16); --line2:rgba(116,151,183,.28);
+  --ink:#E8F0FA; --muted:#8CA3BE; --faint:#61748C;
+  --accent:#3B82F6; --accent2:#60A5FA;
+  --go:#34D399; --warn:#F2C14E; --loss:#F87171;
 }
-html,body,[class*="css"],.stMarkdown,.stButton button{
-  font-family:'Archivo',system-ui,-apple-system,sans-serif}
+html,body,[class*="css"],.stMarkdown,.stButton button,input,select{
+  font-family:'Archivo',system-ui,-apple-system,sans-serif!important}
+.stApp{background:
+  radial-gradient(1100px 620px at 50% -12%,#15233F 0%,transparent 62%),
+  linear-gradient(180deg,#0A1020 0%,#080D1A 100%)}
 #MainMenu,footer,header[data-testid="stHeader"]{visibility:hidden;height:0}
-.block-container{padding-top:1.2rem;padding-bottom:3rem;max-width:46rem}
+.block-container{padding-top:1rem;padding-bottom:3.5rem;max-width:44rem}
 
-.se-head{margin:0 0 4px}
-.se-head h1{font-size:1.75rem;font-weight:800;letter-spacing:-.025em;
-  line-height:1.08;margin:0}
-.se-head .sub{color:var(--muted);font-size:.88rem;margin-top:5px;max-width:56ch}
+/* Brand */
+.se-brand{display:flex;align-items:center;gap:13px;margin:2px 0 16px}
+.se-mark{width:52px;height:52px;border-radius:14px;flex:0 0 auto;
+  border:1px solid var(--line2);display:flex;align-items:center;
+  justify-content:center;
+  background:linear-gradient(160deg,rgba(59,130,246,.22),rgba(59,130,246,.05))}
+.se-mark b{font-size:1.45rem;font-weight:900;color:var(--accent2);
+  line-height:1}
+.se-brand h1{margin:0;font-size:1.5rem;font-weight:900;letter-spacing:-.03em;
+  line-height:1;color:var(--ink);font-style:italic}
+.se-brand h1 em{color:var(--accent2);font-style:italic}
+.se-brand .tag{font-size:.6rem;letter-spacing:.2em;color:var(--faint);
+  font-weight:700;margin-top:5px}
 
-.se-row{border-top:1px solid var(--line);padding:18px 0 16px}
-.se-row:last-of-type{border-bottom:1px solid var(--line)}
-.se-tag{display:inline-block;font-size:.7rem;font-weight:700;
-  padding:3px 9px;border-radius:4px;letter-spacing:.01em}
-.se-tag.go{background:var(--go);color:#fff}
-.se-tag.hold{background:var(--hold-bg);color:var(--hold)}
-.se-tag.off{background:var(--off-bg);color:var(--off)}
-.se-pick{font-size:1.55rem;font-weight:800;letter-spacing:-.025em;
-  line-height:1.12;margin:9px 0 3px;color:var(--ink)}
-.se-meta{color:var(--muted);font-size:.84rem}
-.se-meta .sep{color:var(--faint);padding:0 7px}
+/* Section labels */
+.se-sec{font-size:.62rem;font-weight:800;letter-spacing:.17em;
+  text-transform:uppercase;color:var(--accent2);margin:26px 0 8px}
+.cap{color:var(--muted);font-size:.8rem;margin:-4px 0 10px}
 
-.se-stats{display:grid;grid-template-columns:repeat(4,1fr);
-  gap:0 8px;margin-top:14px}
-.se-stats > div{display:flex;flex-direction:column}
-.se-stats .v{font-size:1.02rem;font-weight:700;line-height:1.3;
-  font-variant-numeric:tabular-nums}
-.se-stats .k{font-size:.68rem;color:var(--muted);font-weight:500}
-.v.pos{color:var(--go)} .v.neg{color:var(--loss)}
+/* Display heading */
+.se-head{margin:0 0 6px}
+.se-head h1{font-size:2rem;font-weight:900;letter-spacing:-.035em;
+  line-height:1.02;margin:0;color:var(--ink)}
+.se-head h1 span{color:var(--accent2)}
+.se-head .sub{color:var(--muted);font-size:.86rem;margin-top:6px}
 
-.se-note{margin-top:12px;font-size:.79rem;color:var(--muted);
-  background:var(--rail);border-radius:6px;padding:8px 11px;line-height:1.45}
-.se-note b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
-
-/* Share card: one screen, no explanation blocks, nothing that reads as a
-   rejection. Built to be screenshotted. */
-.sc-wrap{border:1px solid var(--line);border-radius:14px;overflow:hidden;
-  margin-bottom:10px}
-.sc-top{padding:13px 16px 11px;background:var(--ink);color:#fff}
-.sc-top h2{margin:0;font-size:1.12rem;font-weight:800;letter-spacing:-.02em}
-.sc-top span{display:block;font-size:.74rem;opacity:.62;margin-top:2px}
-.sc-grp{font-size:.64rem;font-weight:700;letter-spacing:.1em;
-  text-transform:uppercase;color:var(--muted);padding:10px 16px 4px;
-  background:var(--rail)}
-.sc-row{display:flex;align-items:center;gap:11px;padding:10px 16px;
+/* The card */
+.sc-wrap{border:1px solid var(--line);border-radius:18px;overflow:hidden;
+  margin-bottom:12px;background:var(--panel);
+  box-shadow:0 18px 40px -26px rgba(0,0,0,.9)}
+.sc-top{padding:16px 18px 14px;
+  background:linear-gradient(135deg,#16233D 0%,#101A2E 100%);
+  border-bottom:1px solid var(--line)}
+.sc-top h2{margin:0;font-size:1.2rem;font-weight:900;letter-spacing:-.025em;
+  color:var(--ink)}
+.sc-top span{display:block;font-size:.72rem;color:var(--muted);margin-top:4px;
+  font-weight:600}
+.sc-grp{font-size:.6rem;font-weight:800;letter-spacing:.17em;
+  text-transform:uppercase;color:var(--faint);padding:12px 18px 5px;
+  background:rgba(255,255,255,.015)}
+.sc-row{display:flex;align-items:center;gap:12px;padding:12px 18px;
   border-top:1px solid var(--line)}
-.sc-rank{flex:0 0 18px;font-size:.76rem;font-weight:700;color:var(--muted);
-  font-variant-numeric:tabular-nums}
+.sc-rank{flex:0 0 22px;height:22px;border-radius:7px;display:flex;
+  align-items:center;justify-content:center;font-size:.68rem;font-weight:800;
+  color:var(--accent2);background:rgba(59,130,246,.12);
+  border:1px solid rgba(59,130,246,.22)}
 .sc-main{flex:1 1 auto;min-width:0}
-.sc-main b{display:block;font-size:1.02rem;font-weight:800;
-  letter-spacing:-.02em;white-space:nowrap;overflow:hidden;
+.sc-main b{display:block;font-size:1.04rem;font-weight:800;color:var(--ink);
+  letter-spacing:-.025em;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
-.sc-main small{display:block;font-size:.72rem;color:var(--muted);margin-top:1px;
+.sc-main small{display:block;font-size:.71rem;color:var(--muted);margin-top:2px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sc-num{flex:0 0 auto;text-align:right;font-variant-numeric:tabular-nums}
-.sc-num b{display:block;font-size:.9rem;font-weight:700}
-.sc-num span{display:block;font-size:.66rem;color:var(--muted)}
-.sc-foot{padding:9px 16px;font-size:.68rem;color:var(--muted);
-  background:var(--rail);border-top:1px solid var(--line)}
+.sc-num b{display:block;font-size:.92rem;font-weight:800;color:var(--ink)}
+.sc-num span{display:block;font-size:.66rem;color:var(--muted);font-weight:600}
+.sc-foot{padding:11px 18px;font-size:.68rem;color:var(--faint);
+  background:rgba(255,255,255,.015);border-top:1px solid var(--line)}
 
-.se-empty{border:1px solid var(--line);border-radius:12px;
-  padding:30px 22px;background:var(--rail)}
-.se-empty h2{font-size:1.3rem;font-weight:700;margin:0 0 7px;
-  letter-spacing:-.02em}
-.se-empty p{color:var(--muted);font-size:.89rem;margin:0;max-width:50ch;
-  line-height:1.55}
-.se-sec{font-size:.95rem;font-weight:700;margin:30px 0 2px;
-  letter-spacing:-.01em}
-.se-sec + .cap{color:var(--muted);font-size:.82rem;margin-bottom:6px}
+/* Rows in the detail view */
+.se-row{border-top:1px solid var(--line);padding:16px 0}
+.se-row:last-of-type{border-bottom:1px solid var(--line)}
+.se-tag{display:inline-block;font-size:.62rem;font-weight:800;
+  padding:4px 10px;border-radius:6px;letter-spacing:.06em;
+  text-transform:uppercase}
+.se-tag.go{background:var(--go);color:#06281C}
+.se-tag.hold{background:rgba(242,193,78,.15);color:var(--warn)}
+.se-tag.off{background:rgba(140,163,190,.12);color:var(--muted)}
+.se-pick{font-size:1.4rem;font-weight:900;letter-spacing:-.03em;
+  line-height:1.1;margin:9px 0 3px;color:var(--ink)}
+.se-meta{color:var(--muted);font-size:.8rem}
+.se-meta .sep{color:var(--faint);padding:0 7px}
+.se-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:0 8px;
+  margin-top:14px}
+.se-stats > div{display:flex;flex-direction:column}
+.se-stats .v{font-size:1rem;font-weight:800;line-height:1.3;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.se-stats .k{font-size:.63rem;color:var(--faint);font-weight:700;
+  letter-spacing:.06em;text-transform:uppercase}
+.v.pos{color:var(--go)} .v.neg{color:var(--loss)}
+.se-note{margin-top:12px;font-size:.76rem;color:var(--muted);
+  background:rgba(255,255,255,.03);border:1px solid var(--line);
+  border-radius:9px;padding:9px 12px;line-height:1.5}
+.se-note b{color:var(--ink);font-weight:700}
+
+/* Moneyline flags */
+.se-mlf{display:flex;align-items:center;gap:12px;padding:12px 15px;
+  border:1px solid rgba(242,193,78,.24);border-radius:13px;margin-bottom:8px;
+  background:linear-gradient(180deg,rgba(242,193,78,.08),rgba(242,193,78,.02))}
+.se-mlf-main{flex:1 1 auto;min-width:0}
+.se-mlf-main b{display:block;font-size:1rem;font-weight:800;color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-mlf-main small{display:block;font-size:.72rem;color:var(--muted);
+  margin-top:2px}
+.se-mlf-stats{flex:0 0 auto;text-align:right;
+  font-variant-numeric:tabular-nums}
+.se-mlf-stats b{display:block;font-size:.9rem;font-weight:800;
+  color:var(--warn)}
+.se-mlf-stats span{display:block;font-size:.68rem;color:var(--muted)}
+
+/* Empty state */
+.se-empty{border:1px solid var(--line);border-radius:14px;padding:26px 20px;
+  background:var(--panel)}
+.se-empty h2{font-size:1.25rem;font-weight:800;margin:0 0 7px;
+  letter-spacing:-.025em;color:var(--ink)}
+.se-empty p{color:var(--muted);font-size:.86rem;margin:0;line-height:1.55}
+
+/* Streamlit widgets */
+.stButton button{border-radius:12px!important;font-weight:800!important;
+  letter-spacing:-.01em!important;border:1px solid var(--line2)!important}
+.stButton button[kind="primary"]{
+  background:linear-gradient(180deg,#3B82F6,#2563EB)!important;
+  border:0!important;box-shadow:0 12px 26px -14px rgba(59,130,246,.9)!important}
+[data-testid="stMetricValue"]{font-weight:900!important;
+  letter-spacing:-.03em!important}
+[data-testid="stMetricLabel"]{font-size:.62rem!important;
+  letter-spacing:.14em!important;text-transform:uppercase!important;
+  color:var(--faint)!important}
+div[data-testid="stExpander"]{border:1px solid var(--line)!important;
+  border-radius:13px!important;background:var(--panel)!important}
 </style>
 """
+
+
+def brand_header():
+    st.markdown(
+        '<div class="se-brand">'
+        '<div class="se-mark"><b>SE</b></div>'
+        '<div><h1>SUNDAY <em>EDGE</em></h1>'
+        '<div class="tag">MEASURED. NOT ASSUMED.</div></div>'
+        '</div>', unsafe_allow_html=True)
 
 
 def render_row(r, badge):
@@ -917,7 +986,8 @@ def render_row(r, badge):
 # ----------------------------------------------------------------------
 # UI
 # ----------------------------------------------------------------------
-st.title("Sunday Edge")
+st.markdown(CARD_CSS, unsafe_allow_html=True)
+brand_header()
 st.caption(f"NFL spreads and totals · model {model_version()}")
 
 st.warning(
