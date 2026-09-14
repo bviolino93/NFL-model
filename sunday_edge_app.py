@@ -132,6 +132,16 @@ BACKTEST_N    = 4254
 # offering makes it worth taking, and never otherwise.
 MIN_EV = 0.0
 
+# How far the model must sit from the line for a market to make the card,
+# in points of raw disagreement (before the 0.099 blend).
+#
+# Set from the real distribution: median disagreement is 2.2 pts, the 75th
+# percentile 3.9, the 90th 5.5. At 4 points roughly 24% of markets qualify,
+# which is about seven plays on a full Sunday, and the chance of a week
+# producing nothing is under 2%. At 5 it drops to four plays and one Sunday
+# in ten comes up empty; at 3 it is eleven plays, most of the board.
+MIN_GAP_PTS = 4.0
+
 
 MODEL_VERSION_BASE = f"1.1.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT}"
 
@@ -366,8 +376,7 @@ def best_offer(cands, fair, sd):
     winner — re-deriving which side won from the threshold is ambiguous,
     because KC -2.5 and DEN +2.5 both reduce to a threshold of +2.5, so the
     lookup always matched the home offer and mislabelled away picks.
-    """
-    """
+
     Line shopping done properly: price every book's actual point AND price,
     then take the highest EV. Best number and best price are often at
     different books, so picking on either one alone leaves money behind.
@@ -1034,18 +1043,26 @@ with tab_slate:
         _kick = (pd.Timestamp(_day).strftime("%A, %b %-d")
                  if _day is not None else f"Week {week}")
 
-        def _rows(df, n=3):
-            """Top n by how far the model is from the line."""
+        def _rows(df, n=None):
+            """
+            Everything where the model sits at least MIN_GAP_PTS from the
+            line, ranked. Not a fixed top three — some weeks the board is
+            full of disagreements and some weeks it is not, and the card
+            should say so.
+            """
             if df.empty:
                 return [], 0
-            d = df.assign(_gap=pd.to_numeric(df["edge_pts"],
-                                             errors="coerce").abs())
-            d = d.sort_values("_gap", ascending=False).head(n)
+            d = df.assign(
+                _gap=(pd.to_numeric(df["model_line"], errors="coerce")
+                      - pd.to_numeric(df["bet_line"], errors="coerce")).abs())
+            d = d[d["_gap"] >= MIN_GAP_PTS].sort_values("_gap",
+                                                        ascending=False)
             return list(d.iterrows()), len(d)
 
         _sp, _nsp = _rows(card[card["market_type"] == "SPREAD"])
         _to, _nto = _rows(card[card["market_type"] == "TOTAL"])
         _mo = sorted(_ml, key=lambda r: -r["ev"])[:2]
+        _shown = len(_sp) + len(_to)
         _nq = _nsp + _nto + len(_mo)
         _n = len(_sp) + len(_to) + len(_mo)
         # Moneylines count in the numerator, so they must count in the
@@ -1054,7 +1071,8 @@ with tab_slate:
 
         _h = [f'<div class="sc-wrap">'
               f'<div class="sc-top"><h2>Top picks</h2>'
-              f'<span>{_html.escape(_kick)} \u00b7 {_n} plays</span></div>']
+              f'<span>{_html.escape(_kick)} \u00b7 {_n} plays \u00b7 '
+              f'{MIN_GAP_PTS:g}+ pts off the line</span></div>']
 
         def _blk(title, items):
             if not items:
@@ -1094,8 +1112,10 @@ with tab_slate:
                     f'<div class="sc-num"><b>{f["odds"]:+d}</b>'
                     f'<span>{f["prob"]:.0%}</span></div></div>')
 
-        _h.append('<div class="sc-foot">Sunday Edge \u00b7 ranked by how far '
-                  'the model sits from the line.</div></div>')
+        _h.append(
+            f'<div class="sc-foot">Sunday Edge \u00b7 every market where the '
+            f'model sits {MIN_GAP_PTS:g}+ points off the line, ranked.'
+            f'</div></div>')
         st.markdown("".join(_h), unsafe_allow_html=True)
 
         _bets = card[card["bet_tier"] == "OFFICIAL"] if not card.empty else card
