@@ -1,0 +1,142 @@
+name: Evaluate NFL model
+
+# What this does
+# --------------
+# Runs the EPA+QB model walk-forward against closing lines and prints the
+# verdict into the Actions log, plus saves a CSV of every graded game as a
+# downloadable artifact.
+#
+# Why here rather than a notebook: the run is tied to a commit, so six months
+# from now you can see which version of the model produced which coefficient.
+# A Colab notebook cannot tell you that.
+#
+# Setup: none. nflverse data is public, so there are no secrets to configure.
+# Actions tab -> "Evaluate NFL model" -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      first_season:
+        description: "First season to include"
+        required: true
+        default: "2016"
+      last_season:
+        description: "Last season to include"
+        required: true
+        default: "2025"
+      alpha:
+        description: "Ridge alpha (800 is the swept default)"
+        required: true
+        default: "800"
+      use_qb:
+        description: "Include the quarterback term"
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+      mode:
+        description: "compare = score all models; qb = measure the QB penalty"
+        type: choice
+        options: ["compare", "team", "granular", "qb"]
+        default: "compare"
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    # Ten seasons is ~180 weekly ridge fits. Generous, but a 6h cap is the
+    # platform default and this should not approach it.
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Play-by-play is the slow part and it never changes for completed
+      # seasons. Cache the parquet files keyed on the season range.
+      - name: Cache play-by-play
+        uses: actions/cache@v4
+        with:
+          path: .cache_nflpbp
+          key: nflpbp-${{ inputs.first_season }}-${{ inputs.last_season }}-v1
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install "nfl_data_py" pandas numpy scipy scikit-learn pyarrow
+
+      - name: Run evaluation
+        env:
+          FIRST: ${{ inputs.first_season }}
+          LAST: ${{ inputs.last_season }}
+          ALPHA: ${{ inputs.alpha }}
+          USE_QB: ${{ inputs.use_qb }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          python - <<'PY'
+          import os
+          import pandas as pd
+          import nfl_data_py as nfl
+          from nfl_epa_ratings import fetch_pbp, prepare_pbp
+          from evaluate_nfl_epa import build_eval_frame, score, report, compare
+
+          first, last = int(os.environ["FIRST"]), int(os.environ["LAST"])
+          alpha = float(os.environ["ALPHA"])
+          use_qb = os.environ["USE_QB"].lower() == "true"
+          seasons = list(range(first, last + 1))
+
+          print(f"Seasons {first}-{last} | alpha {alpha} | QB term {use_qb}", flush=True)
+
+          sched = nfl.import_schedules(seasons)
+          pbp = prepare_pbp(fetch_pbp(seasons))
+          print(f"{len(pbp):,} scrimmage plays, {len(sched):,} games", flush=True)
+
+          mode = os.environ.get("MODE", "compare")
+          if mode == "qb":
+              # Measure the cost of a team missing its usual quarterback and
+              # write qb_adjustment.json. Commit that file to the repo and
+              # Sunday Edge applies it; without it, no adjustment is made.
+              from nfl_qb_adjustment import run as run_qb
+              adj = run_qb(seasons, out_path="qb_adjustment.json")
+              from nfl_qb_adjustment import report as qb_report
+              text = qb_report(adj)
+              frame = pd.DataFrame()
+          elif mode == "compare":
+              # Every candidate on the SAME games, so the numbers mean
+              # something relative to each other and to the 0.099 benchmark.
+              results = compare(seasons, sched, alpha=alpha)
+              text = "\n".join(
+                  f"{k:12s} coef {v['model_coef']:+.4f}  t {v['model_t']:+5.2f}  "
+                  f"cover {v['model_side_cover']:.1%}  MAE {v['mae_model']:.2f}"
+                  for k, v in results.items())
+              text += "\n\ncurrent margin model  coef +0.0990  t +1.19  <- to beat"
+              frame = build_eval_frame(pbp, sched, alpha=alpha, use_qb=use_qb,
+                                       model="granular")
+          else:
+              frame = build_eval_frame(pbp, sched, alpha=alpha,
+                                       use_qb=use_qb, model=mode)
+              text = report(score(frame))
+          frame.to_csv("eval_games.csv", index=False)
+          print("\n" + text, flush=True)
+
+          # Also put it in the run summary, so it is readable without
+          # opening the log.
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write(f"## NFL model evaluation\n\n")
+                  fh.write(f"Seasons **{first}-{last}**, alpha **{alpha}**, "
+                           f"QB term **{use_qb}**\n\n")
+                  fh.write("```\n" + text + "\n```\n")
+          PY
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfl-eval-${{ inputs.first_season }}-${{ inputs.last_season }}
+          path: |
+            eval_games.csv
+            qb_adjustment.json
+          if-no-files-found: warn
