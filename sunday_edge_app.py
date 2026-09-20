@@ -1229,31 +1229,61 @@ div[data-testid="stExpander"]{border:1px solid var(--line)!important;
    the college app uses filled pills in a rounded tray, and the two products
    should not read as different apps. Styled rather than rebuilt, so the
    `with tab_x:` blocks below stay exactly as they are. */
-[data-testid="stTabs"] [data-baseweb="tab-list"]{
+/* Streamlit renames these internals between versions, so target the stable
+   testid and the ARIA roles rather than data-baseweb, which did not match
+   on the deployed build and left the default red-underlined text tabs. */
+[data-testid="stTabs"] div[role="tablist"]{
   display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;
   gap:4px!important;padding:4px!important;margin:2px 0 14px!important;
   border-radius:14px!important;background:#0A1628!important;
   border:1px solid var(--line)!important;
 }
-[data-testid="stTabs"] [data-baseweb="tab-list"]::before,
-[data-testid="stTabs"] [data-baseweb="tab-highlight"],
-[data-testid="stTabs"] [data-baseweb="tab-border"]{display:none!important}
-[data-testid="stTabs"] button[data-baseweb="tab"]{
+/* Kill the underline/highlight bar in every form it ships as. */
+[data-testid="stTabs"] div[role="tablist"] > div[data-baseweb="tab-highlight"],
+[data-testid="stTabs"] div[role="tablist"] > div[data-baseweb="tab-border"],
+[data-testid="stTabs"] div[role="tablist"]::after,
+[data-testid="stTabs"] div[role="tablist"] > div:not([role="tab"]):empty{
+  display:none!important;height:0!important;background:transparent!important;
+}
+[data-testid="stTabs"] button[role="tab"]{
   width:100%!important;min-height:38px!important;padding:9px 2px!important;
-  margin:0!important;border-radius:10px!important;background:transparent!important;
-  display:flex!important;align-items:center!important;justify-content:center!important;
+  margin:0!important;border:0!important;border-radius:10px!important;
+  background:transparent!important;
+  display:flex!important;align-items:center!important;
+  justify-content:center!important;
   transition:background .15s ease,color .15s ease;
 }
-[data-testid="stTabs"] button[data-baseweb="tab"] p{
+[data-testid="stTabs"] button[role="tab"] p,
+[data-testid="stTabs"] button[role="tab"] div{
   margin:0!important;font-size:.72rem!important;font-weight:850!important;
   letter-spacing:-.01em!important;color:var(--muted)!important;
 }
-[data-testid="stTabs"] button[aria-selected="true"]{
+[data-testid="stTabs"] button[role="tab"][aria-selected="true"]{
   background:linear-gradient(145deg,#174676,#10345a)!important;
-  border:1px solid rgba(66,148,239,.26)!important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.035)!important;
 }
-[data-testid="stTabs"] button[aria-selected="true"] p{color:#F7FBFF!important}
+[data-testid="stTabs"] button[role="tab"][aria-selected="true"] p,
+[data-testid="stTabs"] button[role="tab"][aria-selected="true"] div{
+  color:#F7FBFF!important;
+}
+
+/* Alerts. Without a config.toml the theme falls back to Streamlit red for
+   primaryColor and a green-ish panel for st.warning, neither of which is in
+   this palette. The owner warning in particular must read as a warning. */
+div[data-testid="stAlertContainer"],div[data-testid="stAlert"]{
+  border-radius:13px!important;
+}
+div[data-testid="stAlertContainer"]:has(svg),
+div[data-testid="stAlert"]{
+  background:rgba(242,193,78,.09)!important;
+  border:1px solid rgba(242,193,78,.34)!important;
+}
+div[data-testid="stAlertContainer"] p,div[data-testid="stAlert"] p{
+  color:#F6DFA4!important;font-size:.76rem!important;
+}
+div[data-testid="stAlertContainer"] code,div[data-testid="stAlert"] code{
+  background:rgba(242,193,78,.16)!important;color:#F8E9BF!important;
+}
 
 /* Four-up stat strip, in place of st.metric rows. */
 .se-stat-strip{display:flex;gap:0;margin-bottom:14px;padding:14px 8px;

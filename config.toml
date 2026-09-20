@@ -1,3 +1,10 @@
+# Without this file Streamlit uses its default theme, whose primaryColor is
+# red — which is why the tab underline rendered red against a blue-accented
+# app. CSS can override most of it, but the theme is the right place to set
+# it, and it also covers widgets whose internals change between versions.
+#
+# Save as .streamlit/config.toml in the repo root, alongside app.py.
+
 [theme]
 base = "dark"
 primaryColor = "#3B82F6"
@@ -6,6 +13,9 @@ secondaryBackgroundColor = "#111A2E"
 textColor = "#E8F0FA"
 font = "sans serif"
 
-[client]
-toolbarMode = "minimal"
-showErrorDetails = false
+[server]
+# Keep uploads small; nothing in this app needs large files.
+maxUploadSize = 5
+
+[browser]
+gatherUsageStats = false
