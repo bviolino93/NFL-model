@@ -167,34 +167,91 @@ st.set_page_config(page_title="Sunday Edge", page_icon="🏈", layout="wide")
 # ----------------------------------------------------------------------
 # Storage — Google Sheets, with a session fallback
 # ----------------------------------------------------------------------
+SHEETS_SETUP_STEPS = """1. Google Cloud - create a service account, download its JSON key
+2. Streamlit - Settings - Secrets - add a `gcp_service_account_json` entry with the whole JSON pasted in
+3. Create a Google Sheet named exactly **sunday_edge_tracker**
+4. Share that sheet with the service account's `client_email` as **Editor** (not Viewer)
+5. Add `gspread` to requirements.txt, then reboot the app"""
+
+
 def _sheet(return_error=False):
+    """
+    Connect to the tracker spreadsheet, and on failure say WHICH step failed.
+
+    The old version returned the raw exception, so a missing spreadsheet, a
+    sheet not shared with the service account, and a missing library all
+    surfaced as unrelated-looking tracebacks. Each of those has a different
+    fix, and the error is the only thing standing between a working tracker
+    and bets that vanish on restart.
+    """
     try:
         import gspread
-        # Secrets are case-sensitive; accept the usual spellings rather than
-        # letting the name be the thing that breaks it.
-        raw = None
-        for _n in ("gcp_service_account_json", "GCP_SERVICE_ACCOUNT_JSON",
-                   "gcp_service_account", "GCP_SERVICE_ACCOUNT"):
+    except Exception:
+        err = ("gspread is not installed. Add `gspread` to requirements.txt "
+               "in your repo and redeploy.")
+        return (None, err) if return_error else None
+
+    # Secrets are case-sensitive; accept the usual spellings rather than
+    # letting the name be the thing that breaks it.
+    raw = None
+    for _n in ("gcp_service_account_json", "GCP_SERVICE_ACCOUNT_JSON",
+               "gcp_service_account", "GCP_SERVICE_ACCOUNT"):
+        try:
             if _n in st.secrets:
                 raw = st.secrets[_n]
                 break
-        if raw is None:
-            raise KeyError("gcp_service_account_json")
+        except Exception:
+            break
+    if raw is None:
+        err = ("No Google credentials in Secrets. Add a "
+               "`gcp_service_account_json` entry containing the service "
+               "account JSON (Streamlit → Settings → Secrets).")
+        return (None, err) if return_error else None
+
+    try:
         creds = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    except Exception as e:
+        err = (f"The credentials in Secrets are not valid JSON ({e}). Paste "
+               "the whole downloaded key file, braces included.")
+        return (None, err) if return_error else None
+
+    email = str(creds.get("client_email", "the service account"))
+    try:
         gc = gspread.service_account_from_dict(creds)
-        name = "sunday_edge_tracker"
-        for _n in ("tracker_sheet_name", "TRACKER_SHEET_NAME"):
+    except Exception as e:
+        err = f"Google rejected those credentials ({e})."
+        return (None, err) if return_error else None
+
+    name = "sunday_edge_tracker"
+    for _n in ("tracker_sheet_name", "TRACKER_SHEET_NAME"):
+        try:
             if _n in st.secrets:
                 name = str(st.secrets[_n])
                 break
-        sh = gc.open(name)
-        try:
-            ws = sh.worksheet("tracker")
         except Exception:
-            ws = sh.add_worksheet("tracker", rows=2000, cols=len(TRACKER_COLS))
-        return (ws, None) if return_error else ws
+            break
+
+    try:
+        sh = gc.open(name)
     except Exception as e:
-        return (None, str(e)) if return_error else None
+        err = (f"No spreadsheet named '{name}' is visible to this app. "
+               f"Create one with exactly that name, then share it with "
+               f"{email} as an Editor. "
+               f"(If you use a different name, set a `tracker_sheet_name` "
+               f"secret — but note both Edge apps read that same secret, so "
+               f"give each app its own Streamlit project.) [{type(e).__name__}]")
+        return (None, err) if return_error else None
+
+    try:
+        ws = sh.worksheet("tracker")
+    except Exception:
+        try:
+            ws = sh.add_worksheet("tracker", rows=2000, cols=len(TRACKER_COLS))
+        except Exception as e:
+            err = (f"Opened '{name}' but could not create the 'tracker' tab. "
+                   f"Check {email} has Editor access, not Viewer. ({e})")
+            return (None, err) if return_error else None
+    return (ws, None) if return_error else ws
 
 
 def empty_tracker():
@@ -216,7 +273,27 @@ def load_tracker():
     return st.session_state.get("tracker", empty_tracker())
 
 
+def is_owner():
+    """
+    Only the owner writes to the shared ledger.
+
+    Without this, anyone with the link can freeze bets into the record the
+    app exists to measure. Set `owner_code` in Streamlit Secrets to enable;
+    unset, the app behaves as single-user and says so.
+    """
+    try:
+        code = st.secrets.get("owner_code", "")
+    except Exception:
+        code = ""
+    if not code:
+        return True
+    return st.session_state.get("owner_ok") is True
+
+
 def save_tracker(df):
+    # One choke point. Per-call-site checks get forgotten; this cannot be.
+    if not is_owner():
+        return df
     x = df.copy()
     for c in TRACKER_COLS:
         if c not in x.columns:
@@ -230,9 +307,27 @@ def save_tracker(df):
     ws = _sheet()
     if ws is not None:
         try:
-            ws.clear()
-            ws.update([TRACKER_COLS] + x.fillna("").astype(str).values.tolist())
+            # DO NOT clear() then update(). If the clear lands and the update
+            # fails — rate limit, network blip, oversized payload — the whole
+            # ledger is gone and the session copy dies on the next restart.
+            # Overwrite in place, then trim any surplus rows: there is no
+            # moment at which the sheet is empty.
+            body = [TRACKER_COLS] + x.fillna("").astype(str).values.tolist()
+            try:
+                old_rows = len(ws.get_all_values())
+            except Exception:
+                old_rows = 0
+            ws.update(body)
+            if old_rows > len(body):
+                try:
+                    ws.delete_rows(len(body) + 1, old_rows)
+                except Exception:
+                    # Stale trailing rows are visible and recoverable; an
+                    # empty sheet is neither. Leave them.
+                    pass
+            st.session_state["last_save_error"] = ""
         except Exception as e:
+            st.session_state["last_save_error"] = str(e)[:300]
             st.warning(f"Sheet write failed, kept in session only: {e}")
     return x
 
@@ -701,6 +796,140 @@ def freeze(card, tracker):
     return save_tracker(out), len(new)
 
 
+def capture_closing(tracker, offers, sched=None):
+    """
+    Record the market number at kickoff, so CLV means something.
+
+    The docstring at the top of this file claimed "real closing-line
+    capture" as a lesson carried over from the college app. It was not
+    implemented: closing_line, clv_points and closing_captured_at existed in
+    TRACKER_COLS and nothing ever wrote them.
+
+    That matters more here than for college. The NFL backtest measured
+    +0.099 with t = 1.19 over 4,254 games, and at ~100 bets a season the
+    win-loss record will never settle anything. Closing line value is the
+    only thing that can answer the question inside one season.
+
+    Two rules learned the hard way from Saturday Edge:
+
+      * Capture at KICKOFF, not at grading. A number pulled whenever the app
+        next happens to run is not a closing line, and treating it as one
+        produced a statistically significant CLV that turned out to be an
+        artifact of when the page was opened.
+
+      * Stamp WHEN. Without the timestamp there is no way to tell a clean
+        capture from a stale one, so the lag is recorded and the display
+        buckets on it.
+
+    Only rows whose kickoff has passed and that have no closing line yet are
+    touched; a captured line is never rewritten.
+    """
+    if tracker is None or tracker.empty or not offers:
+        return tracker, 0
+    df = tracker.copy()
+    now = datetime.now(timezone.utc)
+
+    cl = pd.to_numeric(df.get("closing_line"), errors="coerce")
+    todo = cl.isna()
+    if not todo.any():
+        return df, 0
+
+    n = 0
+    for idx in df[todo].index:
+        kick = pd.to_datetime(df.at[idx, "kickoff"], errors="coerce", utc=True)
+        if pd.isna(kick) or kick > now:
+            continue
+        off = lookup_offers(offers, str(df.at[idx, "away_team"]),
+                            str(df.at[idx, "home_team"]))
+        if not off:
+            continue
+        mt = str(df.at[idx, "market_type"]).upper()
+        side = str(df.at[idx, "pick_side"]).upper()
+        home = str(df.at[idx, "home_team"])
+        # fetch_live_odds stores spreads as (team, point, price, book) and
+        # totals as (OVER|UNDER, point, price, book). Consensus close is the
+        # median point across books, stated from the HOME side for spreads so
+        # it is on the same footing as the frozen bet_line.
+        pts = []
+        if mt == "TOTAL":
+            for nm, pt, _pr, _bk in off.get("totals", []) or []:
+                if math.isfinite(float(pt)):
+                    pts.append(float(pt))
+        else:
+            # The book states a home favourite as -4.5; bet_line is stored in
+            # nflverse convention, +4.5. Negate, exactly as build_card does,
+            # so the close and the frozen line are on the same scale.
+            for team, pt, _pr, _bk in off.get("spreads", []) or []:
+                if str(team) == home and math.isfinite(float(pt)):
+                    pts.append(-float(pt))
+        if not pts:
+            continue
+        close = float(np.median(pts))
+
+        try:
+            bl = float(df.at[idx, "bet_line"])
+        except (TypeError, ValueError):
+            continue
+        # Positive CLV means the number moved in the bet's favour. Both
+        # numbers are in nflverse convention here: + means home favoured by
+        # that much.
+        #
+        # HOME backer LAYS the number, so they want to have taken a smaller
+        # one than the close: took home -3, it closed -4.25, that is +1.25.
+        # AWAY backer RECEIVES the number, so the reverse: took +3 when it
+        # closed +4.25 means they got less than they could have, -1.25.
+        if mt == "TOTAL":
+            clv = (close - bl) if side == "OVER" else (bl - close)
+        elif side == "HOME":
+            clv = close - bl
+        else:
+            clv = bl - close
+
+        df.at[idx, "closing_line"] = round(close, 2)
+        df.at[idx, "clv_points"] = round(float(clv), 2)
+        df.at[idx, "closing_captured_at"] = now.isoformat(timespec="seconds")
+        n += 1
+    return (save_tracker(df), n) if n else (df, 0)
+
+
+def clv_summary(df):
+    """
+    CLV with the dispersion that makes a mean readable, split by how long
+    after kickoff the close was captured.
+
+    A mean on its own says nothing: +0.36 across 66 bets was "significant"
+    in the college app right up until the captures turned out to be hours
+    stale. Only the near-kickoff bucket is a real measurement.
+    """
+    out = {"n": 0, "mean": float("nan"), "sd": float("nan"),
+           "t": float("nan"), "beat": float("nan"), "zero": float("nan"),
+           "n_clean": 0, "clean_mean": float("nan")}
+    if df is None or df.empty or "clv_points" not in df.columns:
+        return out
+    c = pd.to_numeric(df["clv_points"], errors="coerce")
+    ok = c.notna()
+    if not ok.any():
+        return out
+    cc = c[ok]
+    out["n"] = int(len(cc))
+    out["mean"] = float(cc.mean())
+    out["beat"] = float((cc > 0).mean())
+    out["zero"] = float((cc == 0).mean())
+    if len(cc) > 1 and cc.std(ddof=1) > 0:
+        out["sd"] = float(cc.std(ddof=1))
+        out["t"] = out["mean"] / (out["sd"] / math.sqrt(len(cc)))
+
+    kick = pd.to_datetime(df.loc[ok, "kickoff"], errors="coerce", utc=True)
+    cap = pd.to_datetime(df.loc[ok, "closing_captured_at"],
+                         errors="coerce", utc=True)
+    lag_h = (cap - kick).dt.total_seconds() / 3600.0
+    clean = lag_h.notna() & (lag_h <= 3.0)
+    out["n_clean"] = int(clean.sum())
+    if out["n_clean"]:
+        out["clean_mean"] = float(cc[clean.values].mean())
+    return out
+
+
 def grade(tracker, sched):
     if tracker.empty:
         return tracker, 0
@@ -728,7 +957,18 @@ def grade(tracker, sched):
         if mt == "TOTAL":
             m = (hs + as_) - bl if sd == "OVER" else bl - (hs + as_)
         elif sd == "HOME":
-            m = (hs - as_) + bl
+            # bet_line is stored in nflverse convention: POSITIVE when the
+            # home team is favoured (build_card does `[-p for t == home]` on
+            # the book's American-style point, flipping the sign). So a home
+            # favourite must BEAT the number, not be spotted it.
+            #
+            # This was `(hs - as_) + bl`, which spotted the home side its own
+            # handicap: a home favourite laying 4.5 and winning by 2 graded
+            # WIN, and a home underdog getting 3 who lost by 1 graded LOSS.
+            # Every home spread bet in the ledger was graded against the
+            # wrong sign. The away branch was always correct, which is why
+            # roughly half the record looked plausible.
+            m = (hs - as_) - bl
         else:
             m = (as_ - hs) + bl
 
@@ -829,6 +1069,7 @@ html,body,[class*="css"],.stMarkdown,.stButton button,input,select{
   background:linear-gradient(160deg,rgba(59,130,246,.22),rgba(59,130,246,.05))}
 .se-mark b{font-size:1.45rem;font-weight:900;color:var(--accent2);
   line-height:1}
+.se-mark svg{display:block}
 .se-brand h1{margin:0;font-size:1.5rem;font-weight:900;letter-spacing:-.03em;
   line-height:1;color:var(--ink);font-style:italic}
 .se-brand h1 em{color:var(--accent2);font-style:italic}
@@ -981,14 +1222,208 @@ input,textarea{background:var(--panel2)!important;color:var(--ink)!important}
   color:var(--faint)!important}
 div[data-testid="stExpander"]{border:1px solid var(--line)!important;
   border-radius:13px!important;background:var(--panel)!important}
+
+/* ---- Saturday Edge parity ------------------------------------------- */
+
+/* Segmented pill nav. Streamlit's default tabs are an underlined text row;
+   the college app uses filled pills in a rounded tray, and the two products
+   should not read as different apps. Styled rather than rebuilt, so the
+   `with tab_x:` blocks below stay exactly as they are. */
+[data-testid="stTabs"] [data-baseweb="tab-list"]{
+  display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;
+  gap:4px!important;padding:4px!important;margin:2px 0 14px!important;
+  border-radius:14px!important;background:#0A1628!important;
+  border:1px solid var(--line)!important;
+}
+[data-testid="stTabs"] [data-baseweb="tab-list"]::before,
+[data-testid="stTabs"] [data-baseweb="tab-highlight"],
+[data-testid="stTabs"] [data-baseweb="tab-border"]{display:none!important}
+[data-testid="stTabs"] button[data-baseweb="tab"]{
+  width:100%!important;min-height:38px!important;padding:9px 2px!important;
+  margin:0!important;border-radius:10px!important;background:transparent!important;
+  display:flex!important;align-items:center!important;justify-content:center!important;
+  transition:background .15s ease,color .15s ease;
+}
+[data-testid="stTabs"] button[data-baseweb="tab"] p{
+  margin:0!important;font-size:.72rem!important;font-weight:850!important;
+  letter-spacing:-.01em!important;color:var(--muted)!important;
+}
+[data-testid="stTabs"] button[aria-selected="true"]{
+  background:linear-gradient(145deg,#174676,#10345a)!important;
+  border:1px solid rgba(66,148,239,.26)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035)!important;
+}
+[data-testid="stTabs"] button[aria-selected="true"] p{color:#F7FBFF!important}
+
+/* Four-up stat strip, in place of st.metric rows. */
+.se-stat-strip{display:flex;gap:0;margin-bottom:14px;padding:14px 8px;
+  border-radius:14px;background:rgba(12,26,44,.55);border:1px solid var(--line)}
+.se-stat-strip > div{flex:1;text-align:center;
+  border-right:1px solid rgba(116,151,183,.10)}
+.se-stat-strip > div:last-child{border-right:none}
+.se-stat-strip b{display:block;font-size:1.02rem;color:var(--ink);font-weight:800;
+  font-variant-numeric:tabular-nums}
+.se-stat-strip b.pos{color:var(--go)} .se-stat-strip b.neg{color:var(--loss)}
+.se-stat-strip span{display:block;margin-top:3px;font-size:.58rem;
+  letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
+
+/* Chart frame + status chip. */
+.se-curve{padding:10px 8px 10px;border-radius:14px;margin-bottom:10px;
+  background:rgba(12,26,44,.5);border:1px solid var(--line)}
+.se-curve svg{display:block;width:100%;height:auto}
+.se-verdict{display:flex;align-items:baseline;gap:8px;margin:2px 0 10px;
+  padding:10px 13px;border-radius:12px;
+  background:rgba(12,26,44,.55);border:1px solid var(--line)}
+.se-verdict b{font-size:.80rem;font-weight:800;color:var(--ink);
+  letter-spacing:-.01em}
+.se-verdict em{font-style:normal;font-size:.62rem;font-weight:700;
+  color:var(--muted);margin-left:auto}
+.se-verdict-dot{width:7px;height:7px;border-radius:50%;flex:0 0 7px;
+  align-self:center}
+.se-verdict.pos .se-verdict-dot{background:var(--go);
+  box-shadow:0 0 8px rgba(52,211,153,.55)}
+.se-verdict.neg .se-verdict-dot{background:var(--loss);
+  box-shadow:0 0 8px rgba(248,113,113,.45)}
+.se-verdict.wait .se-verdict-dot{background:var(--warn);
+  box-shadow:0 0 8px rgba(242,193,78,.45)}
+
+/* Compact list rows. */
+.se-extra{display:flex;align-items:center;gap:10px;padding:9px 4px;
+  border-bottom:1px solid rgba(116,151,183,.08)}
+.se-extra:last-child{border-bottom:none}
+.se-extra-rank{width:20px;flex:0 0 20px;font-size:.62rem;color:var(--muted);
+  font-weight:800;text-align:center}
+.se-extra-main{flex:1;min-width:0}
+.se-extra-main b{display:block;font-size:.82rem;color:var(--ink);font-weight:800}
+.se-extra-main small{display:block;font-size:.63rem;color:var(--muted);
+  margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-extra-ev{font-size:.8rem;font-weight:800;white-space:nowrap;color:var(--go)}
+.se-extra-ev.neg{color:var(--loss)}
 </style>
 """
+
+
+def se_equity_svg(units, w=320, h=104):
+    """Cumulative units, with its own scale. Ported from the college app so
+    the two products show a record the same way."""
+    pts = [float(v) for v in units
+           if v is not None and isinstance(v, (int, float)) and math.isfinite(float(v))]
+    if len(pts) < 2:
+        return ""
+    cum, run = [], 0.0
+    for v in pts:
+        run += v
+        cum.append(run)
+    peak, trough = max(max(cum), 0.0), min(min(cum), 0.0)
+    lo, hi = trough, peak
+    if hi - lo < 1e-9:
+        hi, lo = hi + 1, lo - 1
+    pad = (hi - lo) * 0.18
+    lo, hi = lo - pad, hi + pad
+    ml, mr, mt, mb = 34, 10, 12, 14
+
+    def X(i):
+        return ml + (w - ml - mr) * (i / max(len(cum) - 1, 1))
+
+    def Y(v):
+        return mt + (h - mt - mb) * (1 - (v - lo) / (hi - lo))
+
+    zero = Y(0.0)
+    line = " ".join(f"{X(i):.1f},{Y(v):.1f}" for i, v in enumerate(cum))
+    area = f"{X(0):.1f},{zero:.1f} " + line + f" {X(len(cum)-1):.1f},{zero:.1f}"
+    end = cum[-1]
+    col = "#34D399" if end >= 0 else "#F87171"
+    return (
+        f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" '
+        f'preserveAspectRatio="xMidYMid meet" style="display:block" '
+        f'xmlns="http://www.w3.org/2000/svg" role="img" '
+        f'aria-label="Cumulative units over {len(cum)} bets">'
+        f'<defs><linearGradient id="seEq" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0%" stop-color="{col}" stop-opacity=".18"/>'
+        f'<stop offset="100%" stop-color="{col}" stop-opacity="0"/>'
+        f'</linearGradient></defs>'
+        f'<polygon points="{area}" fill="url(#seEq)"/>'
+        f'<line x1="{ml}" y1="{zero:.1f}" x2="{w-mr}" y2="{zero:.1f}" '
+        f'stroke="#8CA3BE" stroke-opacity=".40" stroke-width="1" '
+        f'stroke-dasharray="3 3"/>'
+        f'<text x="{ml-5}" y="{Y(peak)+3:.1f}" fill="#8CA3BE" font-size="8" '
+        f'font-weight="700" text-anchor="end">{peak:+.1f}u</text>'
+        f'<text x="{ml-5}" y="{zero+3:.1f}" fill="#A8BCD4" font-size="8" '
+        f'font-weight="800" text-anchor="end">0</text>'
+        f'<text x="{ml-5}" y="{Y(trough)+3:.1f}" fill="#8CA3BE" font-size="8" '
+        f'font-weight="700" text-anchor="end">{trough:+.1f}u</text>'
+        f'<polyline points="{line}" fill="none" stroke="{col}" stroke-width="1.8" '
+        f'stroke-linejoin="round" stroke-linecap="round"/>'
+        f'<circle cx="{X(len(cum)-1):.1f}" cy="{Y(end):.1f}" r="3.2" fill="{col}"/>'
+        f'<text x="{ml}" y="{h-3}" fill="#61748C" font-size="7.5" '
+        f'font-weight="700" text-anchor="start">BET 1</text>'
+        f'<text x="{w-mr}" y="{h-3}" fill="#61748C" font-size="7.5" '
+        f'font-weight="700" text-anchor="end">BET {len(cum)}</text>'
+        f'</svg>'
+    )
+
+
+def se_winrate_ci_svg(wins, losses, w=320, h=74, breakeven=0.5238):
+    """Observed hit rate with its 95% band, against the -110 breakeven."""
+    n = int(wins) + int(losses)
+    if n < 5:
+        return ""
+    p = wins / n
+    se = math.sqrt(breakeven * (1 - breakeven) / n)
+    lo_ci, hi_ci = max(p - 1.96 * se, 0.0), min(p + 1.96 * se, 1.0)
+    lo, hi = min(lo_ci, breakeven) - 0.05, max(hi_ci, breakeven) + 0.05
+    ml, mr, bar_y, bar_h = 8, 8, 30, 13
+
+    def X(v):
+        return ml + (w - ml - mr) * ((v - lo) / (hi - lo))
+
+    inside = lo_ci <= breakeven <= hi_ci
+    col = "#60A5FA" if inside else ("#34D399" if p > breakeven else "#F87171")
+    return (
+        f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" '
+        f'preserveAspectRatio="xMidYMid meet" style="display:block" '
+        f'xmlns="http://www.w3.org/2000/svg" role="img" '
+        f'aria-label="Hit rate {p:.1%}, 95% interval {lo_ci:.1%} to {hi_ci:.1%}">'
+        f'<rect x="{ml}" y="{bar_y}" width="{w-ml-mr}" height="{bar_h}" rx="6" '
+        f'fill="#8CA3BE" fill-opacity=".10"/>'
+        f'<rect x="{X(lo_ci):.1f}" y="{bar_y}" '
+        f'width="{max(X(hi_ci)-X(lo_ci),2):.1f}" height="{bar_h}" rx="6" '
+        f'fill="{col}" fill-opacity=".30"/>'
+        f'<line x1="{X(breakeven):.1f}" y1="{bar_y-7}" x2="{X(breakeven):.1f}" '
+        f'y2="{bar_y+bar_h+7}" stroke="#F2C14E" stroke-width="1.6"/>'
+        f'<text x="{X(breakeven):.1f}" y="{bar_y-11}" fill="#F2C14E" '
+        f'font-size="8.5" font-weight="800" text-anchor="middle">'
+        f'BREAK EVEN {breakeven*100:.1f}%</text>'
+        f'<circle cx="{X(p):.1f}" cy="{bar_y+bar_h/2:.1f}" r="4.2" fill="{col}"/>'
+        f'<text x="{X(lo_ci):.1f}" y="{bar_y+bar_h+16}" fill="#8CA3BE" '
+        f'font-size="8" font-weight="700" text-anchor="start">{lo_ci*100:.0f}%</text>'
+        f'<text x="{X(hi_ci):.1f}" y="{bar_y+bar_h+16}" fill="#8CA3BE" '
+        f'font-size="8" font-weight="700" text-anchor="end">{hi_ci*100:.0f}%</text>'
+        f'<text x="{X(p):.1f}" y="{bar_y+bar_h+16}" fill="#E8F0FA" font-size="8.5" '
+        f'font-weight="800" text-anchor="middle">{p*100:.1f}%</text>'
+        f'</svg>'
+    )
+
+
+def stat_strip(items):
+    """items: list of (value, label, tone) where tone is "", "pos" or "neg"."""
+    cells = "".join(
+        f'<div><b{f" class=\"{t}\"" if t else ""}>{_html.escape(str(v))}</b>'
+        f'<span>{_html.escape(str(k))}</span></div>'
+        for v, k, t in items
+    )
+    return f'<div class="se-stat-strip">{cells}</div>'
 
 
 def brand_header():
     st.markdown(
         '<div class="se-brand">'
-        '<div class="se-mark"><b>SE</b></div>'
+        '<div class="se-mark">'
+        '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" '
+        'stroke="#60A5FA" stroke-width="2.4" stroke-linecap="round">'
+        '<path d="M6 4v6"/><path d="M18 4v6"/><path d="M6 10h12"/>'
+        '<path d="M12 10v10"/></svg>'
+        '</div>'
         '<div><h1>SUNDAY <em>EDGE</em></h1>'
         '<div class="tag">MEASURED. NOT ASSUMED.</div></div>'
         '</div>', unsafe_allow_html=True)
@@ -1043,6 +1478,28 @@ def render_row(r, badge):
 st.markdown(CARD_CSS, unsafe_allow_html=True)
 brand_header()
 st.caption(f"NFL spreads and totals · model {model_version()}")
+
+try:
+    _owner_code = st.secrets.get("owner_code", "")
+except Exception:
+    _owner_code = ""
+if not _owner_code:
+    st.warning(
+        "**No owner code set.** Anyone with this link can freeze bets into "
+        "the shared record. Add an `owner_code` to Streamlit Secrets before "
+        "sharing the URL."
+    )
+elif not is_owner():
+    st.caption("Viewing the shared record \u2014 picks and grading are "
+               "managed by the owner.")
+    with st.expander("Owner sign-in", expanded=False):
+        _try = st.text_input("Owner code", type="password", key="owner_try")
+        if st.button("Unlock", key="owner_btn"):
+            if _try == _owner_code:
+                st.session_state["owner_ok"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect code.")
 
 st.warning(
     f"**This model did not beat the closing line in backtest.** Across "
@@ -1382,18 +1839,28 @@ with tab_game:
 
 with tab_tracker:
     tr = load_tracker()
+    # Capture BEFORE grading: a game can finish and be graded on the same
+    # load, and the close has to be recorded at kickoff either way.
+    tr, _ncap = capture_closing(tr, live_offers)
     tr, n = grade(tr, sched_all)
     if n:
         st.success(f"Graded {n} completed bets.")
+    if _ncap:
+        st.caption(f"Captured the closing number on {_ncap} bet(s).")
 
     ws, err = _sheet(return_error=True)
     if ws is None:
-        st.warning("Storage: session only — records are lost when the app "
-                   "restarts. Add Google Sheets credentials to keep history.")
+        st.error(
+            "**Not connected to Google Sheets.** Every bet below lives in "
+            "session memory only and disappears when this app restarts or "
+            "sleeps \u2014 which Streamlit does after a few hours idle."
+        )
         if err:
-            st.caption(f"Reason: {err}")
+            st.markdown(f"**What to fix:** {err}")
+        with st.expander("Set it up", expanded=False):
+            st.markdown(SHEETS_SETUP_STEPS)
     else:
-        st.caption("Storage: Google Sheets — history is saved permanently.")
+        st.caption("Storage: Google Sheets \u2014 history is saved permanently.")
 
     # THE question: are these picks on the right side more than 52.4% of
     # the time? Reported with its own error bar, because a hit rate from a
@@ -1404,12 +1871,26 @@ with tab_tracker:
         _n = len(_g)
         _rate = _w / _n
         _se = (0.25 / _n) ** 0.5
-        st.markdown("### Right side, how often?")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Hit rate", f"{_rate:.1%}")
-        c2.metric("Breakeven", "52.4%")
-        c3.metric("Graded", f"{_n}")
+        st.markdown('<div class="se-sec">RIGHT SIDE, HOW OFTEN?</div>',
+                    unsafe_allow_html=True)
+        _ci_svg = se_winrate_ci_svg(_w, _n - _w)
+        if _ci_svg:
+            st.markdown(f'<div class="se-curve">{_ci_svg}</div>',
+                        unsafe_allow_html=True)
         _lo, _hi = _rate - 1.96 * _se, _rate + 1.96 * _se
+        # Status chip, matching the college app: a one-line verdict rather
+        # than three metric cards the reader has to compare themselves.
+        if _lo > 0.524:
+            _tone, _lab = "pos", "Beating the number"
+        elif _hi < 0.524:
+            _tone, _lab = "neg", "Below break-even"
+        else:
+            _tone, _lab = "wait", "Too early to call"
+        st.markdown(
+            f'<div class="se-verdict {_tone}"><span class="se-verdict-dot"></span>'
+            f'<b>{_lab}</b><em>{_n} graded</em></div>',
+            unsafe_allow_html=True,
+        )
         st.caption(
             f"95% range given {_n} bets: {_lo:.1%} to {_hi:.1%}. "
             + ("Breakeven sits inside that range, so this does not yet "
@@ -1426,17 +1907,71 @@ with tab_tracker:
             f"confidence you would need roughly {_need:,} graded bets."
         )
 
+    # Closing line value — the only measurement that can say anything at
+    # NFL volume, where a season is ~100 bets.
+    _clv = clv_summary(tr)
+    if _clv["n"]:
+        st.markdown('<div class="se-sec">CLOSING LINE VALUE</div>',
+                    unsafe_allow_html=True)
+        st.markdown(
+            stat_strip([
+                (f"{_clv['mean']:+.2f}", "Avg pts vs close",
+                 "pos" if _clv["mean"] >= 0 else "neg"),
+                (f"{_clv['beat']:.0%}", "Beat the close", ""),
+                (f"{_clv['zero']:.0%}", "No movement", ""),
+                (f"{_clv['n']}", "Measured", ""),
+            ]),
+            unsafe_allow_html=True,
+        )
+        if _clv["n_clean"] < 30:
+            st.caption(
+                f"{_clv['n_clean']} of {_clv['n']} closes were captured within "
+                "3 hours of kickoff. Only those are a real measurement — a "
+                "number pulled whenever the app happened to run is not a "
+                "closing line. Nothing here counts as evidence until roughly "
+                "100 clean captures, whatever the sign."
+            )
+        elif math.isfinite(_clv["t"]):
+            st.caption(
+                f"Signal strength {_clv['t']:+.2f} on {_clv['n_clean']} "
+                "kickoff-captured bets — above +2.00 would be meaningful."
+            )
+
     if tr.empty:
         st.info("No bets frozen yet.")
     else:
         for tier in ["OFFICIAL", "WATCH"]:
             sub = tr[tr["bet_tier"] == tier]
             s = summarize(sub)
-            st.subheader(f"{tier.title()} — {s['w']}-{s['l']}-{s['p']}")
-            a, b, c = st.columns(3)
-            a.metric("Units", f"{s['units']:+.2f}")
-            b.metric("ROI", f"{s['roi']:+.1%}" if s["n"] else "—")
-            c.metric("Graded", f"{s['n']}")
+            st.markdown(f'<div class="se-sec">{tier} LEDGER</div>',
+                         unsafe_allow_html=True)
+            st.markdown(
+                stat_strip([
+                    (f"{s['w']}-{s['l']}-{s['p']}", "W \u00b7 L \u00b7 P", ""),
+                    (f"{s['units']:+.2f}u", "Units",
+                     "pos" if s["units"] >= 0 else "neg"),
+                    (f"{s['roi']:+.1%}" if s["n"] else "\u2014", "ROI",
+                     ("pos" if s["roi"] >= 0 else "neg") if s["n"] else ""),
+                    (f"{s['n']}", "Graded", ""),
+                ]),
+                unsafe_allow_html=True,
+            )
+            _eq = ""
+            if s["n"]:
+                _gsub = sub[sub["result"].isin(["WIN", "LOSS", "PUSH"])].copy()
+                _sort_cols = [c for c in ("season", "week", "kickoff")
+                              if c in _gsub.columns]
+                if _sort_cols:
+                    _gsub = _gsub.sort_values(_sort_cols)
+                _eq = se_equity_svg(
+                    pd.to_numeric(_gsub.get("units_result"), errors="coerce")
+                    .fillna(0.0).tolist()
+                )
+            if _eq:
+                st.markdown(f'<div class="se-curve">{_eq}</div>',
+                            unsafe_allow_html=True)
+                st.caption("Every graded bet in order, 1 unit flat. "
+                           "Nothing reset, nothing hidden.")
 
             m = pd.to_numeric(sub.get("result_margin"), errors="coerce").dropna()
             if len(m):
@@ -1448,3 +1983,18 @@ with tab_tracker:
         st.download_button("Download tracker CSV",
                            tr.to_csv(index=False).encode(),
                            "sunday_edge_tracker.csv", "text/csv")
+
+st.divider()
+st.markdown(
+    '<div style="text-align:center;padding:8px 0 4px">'
+    '<div style="font-size:.62rem;letter-spacing:.2em;font-weight:900;'
+    'color:#61748C">SUNDAY <span style="color:#60A5FA">EDGE</span></div>'
+    '<div style="font-size:.66rem;color:#61748C;margin-top:7px;'
+    'line-height:1.6;max-width:34rem;margin-left:auto;margin-right:auto">'
+    'For entertainment and research. Backtested on 4,254 games this model '
+    'did NOT beat the closing line (coefficient +0.099, t = 1.19) \u2014 no '
+    'edge is claimed. 21+ where legal. If gambling stops being fun, call '
+    '1-800-GAMBLER or text 800GAM.'
+    '</div></div>',
+    unsafe_allow_html=True,
+)
