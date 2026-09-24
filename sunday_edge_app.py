@@ -526,7 +526,118 @@ def line_sign(g):
 # ----------------------------------------------------------------------
 # Model
 # ----------------------------------------------------------------------
-def fit_ratings(hist, teams, target, symmetric=False):
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_qb_adjustment():
+    """
+    The measured cost of a team missing its usual quarterback, in points.
+
+    Produced by nfl_qb_adjustment.py against historical games and committed
+    as qb_adjustment.json. Absent the file there is NO adjustment — the app
+    will not invent a number for something worth 5-7 points.
+    """
+    try:
+        with open("qb_adjustment.json") as fh:
+            d = json.load(fh)
+        pts = float(d.get("penalty_points", 0.0))
+        if not (math.isfinite(pts) and 0.0 < pts < 15.0):
+            return None
+        return d
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def qb_status(season, week):
+    """
+    Which teams are starting someone other than their usual quarterback.
+
+    Depth charts give the listed starter; play-by-play gives who has actually
+    been taking the snaps this season. A mismatch is the flag.
+
+    Returns {team: {"expected": id, "usual": id, "changed": bool}}.
+    """
+    try:
+        import nfl_data_py as nfl
+        dc = nfl.import_depth_charts([int(season)])
+    except Exception:
+        return {}
+    try:
+        dc = dc[(dc["position"].astype(str).str.upper() == "QB")]
+        if "depth_team" in dc.columns:
+            dc = dc[pd.to_numeric(dc["depth_team"], errors="coerce") == 1]
+        wk = pd.to_numeric(dc.get("week"), errors="coerce")
+        cur = dc[wk == int(week)] if wk.notna().any() else dc
+        if cur.empty:
+            cur = dc[wk == wk.max()] if wk.notna().any() else dc
+        tcol = "club_code" if "club_code" in cur.columns else "team"
+        idcol = ("gsis_id" if "gsis_id" in cur.columns
+                 else ("player_id" if "player_id" in cur.columns else None))
+        if idcol is None:
+            return {}
+        listed = (cur.dropna(subset=[idcol])
+                     .drop_duplicates(tcol, keep="first")
+                     .set_index(tcol)[idcol].astype(str).to_dict())
+    except Exception:
+        return {}
+
+    # Who has actually been starting, from earlier weeks this season.
+    try:
+        pbp = nfl.import_pbp_data([int(season)], downcast=True, cache=False)
+        pbp = pbp[pd.to_numeric(pbp["week"], errors="coerce") < int(week)]
+        pbp = pbp.dropna(subset=["passer_player_id", "posteam"])
+        usual = (pbp.groupby(["posteam", "passer_player_id"]).size()
+                    .rename("n").reset_index()
+                    .sort_values("n", ascending=False)
+                    .drop_duplicates("posteam", keep="first")
+                    .set_index("posteam")["passer_player_id"].astype(str).to_dict())
+    except Exception:
+        usual = {}
+
+    # How many snaps has each passer actually taken? Needed to tell an
+    # upgrade from a downgrade.
+    try:
+        counts = (pbp.groupby("passer_player_id").size()
+                     .rename("n").to_dict())
+    except Exception:
+        counts = {}
+
+    out = {}
+    for team, exp_id in listed.items():
+        u = usual.get(str(team))
+        changed = bool(u is not None and str(exp_id) != str(u))
+        # DIRECTION MATTERS, and the first version of this got it backwards.
+        #
+        # A flat "starter changed" penalty treats a returning franchise
+        # quarterback exactly like a third-stringer: both differ from whoever
+        # has been taking the snaps, so both were penalised. Atlanta getting
+        # Penix back would have had four points subtracted for it.
+        #
+        # Without per-quarterback values we cannot price an upgrade, so we do
+        # not try. Penalise only a clear downgrade — the listed starter has
+        # taken materially fewer snaps than the man he is replacing — and for
+        # anything else flag it for display and adjust nothing.
+        direction = "none"
+        if changed:
+            n_exp = float(counts.get(str(exp_id), 0) or 0)
+            n_usu = float(counts.get(str(u), 0) or 0)
+            if n_exp < 0.5 * n_usu:
+                direction = "downgrade"
+            elif n_exp > n_usu:
+                direction = "upgrade"
+            else:
+                direction = "unclear"
+        out[str(team)] = {
+            "expected": str(exp_id),
+            "usual": u,
+            "changed": changed,
+            "direction": direction,
+            # Only a downgrade moves the number.
+            "penalise": direction == "downgrade",
+        }
+    return out
+
+
+def fit_ratings(hist, teams, target, symmetric=False, min_games=40, alpha=None):
     """
     Home field is estimated OUTSIDE the ridge, and team ratings are rescaled
     so predicted margins have the same spread as real ones.
@@ -538,8 +649,15 @@ def fit_ratings(hist, teams, target, symmetric=False):
     side favoured that barely showed; where it had them as a dog the model
     disagreed loudly — and the card filled with home underdogs.
     """
-    if len(hist) < 40:
+    if len(hist) < min_games:
         return None, None
+    # Shrink harder on smaller samples. RIDGE_ALPHA was chosen for a full
+    # 320-game window; applied unchanged to 32 games it would let two results
+    # per team move a rating several points. Scaling the penalty by how much
+    # less data there is keeps a small in-season fit honest instead of
+    # excluding it entirely.
+    _alpha = float(alpha) if alpha is not None else \
+        RIDGE_ALPHA * max(1.0, WINDOW_GAMES / max(len(hist), 1))
     y = np.asarray(hist[target].values, dtype=float)
 
     # Constant term first, unpenalised: the league-average home margin (or
@@ -556,7 +674,7 @@ def fit_ratings(hist, teams, target, symmetric=False):
         if a[r] in idx:
             X[r, idx[a[r]]] = 1.0 if symmetric else -1.0
 
-    m = Ridge(alpha=RIDGE_ALPHA, fit_intercept=False).fit(X, y0)
+    m = Ridge(alpha=_alpha, fit_intercept=False).fit(X, y0)
     fitted = X @ m.coef_
 
     # Undo the compression: scale ratings so the spread of predicted margins
@@ -590,8 +708,14 @@ def build_ratings(sched, season, week):
         return None
     t_all, tbase = fit_ratings(recent, teams, "total_points", symmetric=True)
 
-    r_cur, _ = fit_ratings(in_season, teams, "home_margin")
-    t_cur, _ = fit_ratings(in_season, teams, "total_points", symmetric=True)
+    # The in-season fit used the same 40-game floor as the full window, so
+    # through week 3 (32 games) it returned None and the weight collapsed to
+    # zero — the model was running entirely on last season while showing
+    # "32 of them this season". Lower the floor and let the WEIGHT, which
+    # already scales with sample size, do the work.
+    r_cur, _ = fit_ratings(in_season, teams, "home_margin", min_games=16)
+    t_cur, _ = fit_ratings(in_season, teams, "total_points", symmetric=True,
+                           min_games=16)
     w = min(1.0, len(in_season) / 160.0) if r_cur is not None else 0.0
 
     def _blend(cur, allr):
@@ -631,6 +755,16 @@ def build_card(sched, season, week, sign, offers=None):
     if rt is None:
         return pd.DataFrame(), None
 
+    # Quarterback adjustment. The rating is a ridge on final margins and has
+    # no idea who is playing, so when a starter is out it keeps the value he
+    # earned — and disagrees with a line that moved on the news. That is not
+    # edge, it is the model not knowing something everyone else knows, and it
+    # is large: the penalty is measured, not guessed, and if it has not been
+    # measured yet nothing is applied.
+    _qb_adj = load_qb_adjustment()
+    _qb_pen = float(_qb_adj["penalty_points"]) if _qb_adj else 0.0
+    _qb_stat = qb_status(season, week) if _qb_pen else {}
+
     games = sched[(sched["season"] == season) & (sched["week"] == week)].copy()
     rows = []
     for _, g in games.iterrows():
@@ -638,7 +772,10 @@ def build_card(sched, season, week, sign, offers=None):
         if h not in rt["margin"] or a not in rt["margin"]:
             continue
 
-        raw_model = rt["margin"][h] - rt["margin"][a] + rt["hfa"]
+        h_out = bool(_qb_stat.get(str(h), {}).get("penalise"))
+        a_out = bool(_qb_stat.get(str(a), {}).get("penalise"))
+        qb_delta = (-_qb_pen if h_out else 0.0) + (_qb_pen if a_out else 0.0)
+        raw_model = (rt["margin"][h] - rt["margin"][a] + rt["hfa"]) + qb_delta
         mkt = sign * g["spread_line"] if pd.notna(g.get("spread_line")) else None
         live = lookup_offers(offers, a, h) if offers else None
 
@@ -1329,6 +1466,10 @@ div[data-testid="stAlertContainer"] code,div[data-testid="stAlert"] code{
   margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .se-extra-ev{font-size:.8rem;font-weight:800;white-space:nowrap;color:var(--go)}
 .se-extra-ev.neg{color:var(--loss)}
+.sc-note{padding:8px 12px;margin:0 0 2px;font-size:.66rem;line-height:1.5;
+  color:var(--muted);border-bottom:1px solid rgba(116,151,183,.08)}
+.sc-note b{color:var(--ink)}
+.sc-note.warn{color:#F6DFA4;background:rgba(242,193,78,.07)}
 </style>
 """
 
@@ -1693,6 +1834,46 @@ with tab_slate:
               f'<div class="sc-top"><h2>Top picks</h2>'
               f'<span>{_html.escape(_kick)} \u00b7 {_n} plays \u00b7 '
               f'{MIN_GAP_PTS:g}+ pts off the line</span></div>']
+
+        # Say what the quarterback adjustment did. If it is not applied, say
+        # that too — a reader should never have to guess whether a pick
+        # exists because the model spotted something or because it did not
+        # know a starter was out.
+        _adj = load_qb_adjustment()
+        if _adj:
+            _stat = qb_status(season, week)
+            _flagged = sorted(t for t, v in _stat.items() if v.get("changed"))
+            _teams_on_card = set(card.get("home_team", [])) | \
+                set(card.get("away_team", []))
+            _down = [t for t in _flagged if t in _teams_on_card
+                     and _stat.get(t, {}).get("direction") == "downgrade"]
+            _other = [t for t in _flagged if t in _teams_on_card
+                      and t not in _down]
+            if _down:
+                _h.append(
+                    f'<div class="sc-note">Backup quarterback adjusted for: '
+                    f'<b>{_html.escape(", ".join(_down))}</b> '
+                    f'({_adj["penalty_points"]:.1f} pts, measured over '
+                    f'{_adj.get("n_games_total", 0):,} games)</div>')
+            if _other:
+                # A returning starter is an upgrade, and the model has no way
+                # to price one. Say so rather than silently ignoring it.
+                _h.append(
+                    f'<div class="sc-note warn">Quarterback change NOT '
+                    f'adjusted for: <b>{_html.escape(", ".join(_other))}</b> '
+                    f'\u2014 the listed starter is not a downgrade, and the '
+                    f'model cannot price an upgrade. Treat these picks with '
+                    f'caution.</div>')
+            if not _down and not _other:
+                _h.append(
+                    '<div class="sc-note">No quarterback changes detected '
+                    'this week.</div>')
+        else:
+            _h.append(
+                '<div class="sc-note warn">No injury adjustment applied \u2014 '
+                'the model does not know who is playing. A pick can exist '
+                'purely because a starter is out and the line moved without '
+                'it. Run the QB measurement to enable.</div>')
 
         def _blk(title, items):
             if not items:
