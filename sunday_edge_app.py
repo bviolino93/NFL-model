@@ -12,6 +12,11 @@ Backtested 2007-2025 (4,254 games) it did NOT beat the closing line:
 model coefficient +0.099, t = +1.19. Those constants are in the header
 below and shown in the app, because the honest thing is to let the
 record accumulate against a stated prior rather than hide it.
+
+v1.2: bets are priced at your book (consensus line at -110 by default),
+the card and the tracker use one tiering rule (OFFICIAL = positive EV,
+WATCH = big disagreement that does not beat the vig), closing lines are
+the last PREGAME snapshot, and wins pay at the recorded price.
 """
 
 import warnings
@@ -132,6 +137,13 @@ BACKTEST_N    = 4254
 # offering makes it worth taking, and never otherwise.
 MIN_EV = 0.0
 
+# The price assumed when your book is not in the odds feed. 734 Games is not
+# an Odds API bookmaker, so by default the card prices every market at the
+# consensus number and this price, rather than at whichever book happened to
+# have the best number -- a price you cannot actually get.
+ASSUMED_PRICE = -110
+CONSENSUS_LABEL = "Consensus line @ -110"
+
 # How far the model must sit from the line for a market to make the card,
 # in points of raw disagreement (before the 0.099 blend).
 #
@@ -142,14 +154,24 @@ MIN_EV = 0.0
 # in ten comes up empty; at 3 it is eleven plays, most of the board.
 MIN_GAP_PTS = 4.0
 
+# TIERS (v1.2):
+#   OFFICIAL  expected value >= MIN_EV at the price you will actually get.
+#             With the 0.099 blend a spread needs roughly 8 points of raw
+#             disagreement to get there at -110; a strong-wind total can get
+#             there on its own. Some weeks this is empty, and that is correct.
+#   WATCH     the model is MIN_GAP_PTS+ off the line but the edge does not
+#             beat the vig. Frozen to its own ledger so the question "do the
+#             big disagreements land?" still gets answered -- without money
+#             riding on bets the app's own math says lose ~2% each.
 
-MODEL_VERSION_BASE = f"1.1.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT}"
+
+MODEL_VERSION_BASE = f"1.2.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT}"
 
 
 def model_version():
     """Threshold is part of the version: change the bar and the record it
     produces is no longer comparable with what came before."""
-    return f"{MODEL_VERSION_BASE}-ev{MIN_EV:g}"
+    return f"{MODEL_VERSION_BASE}-ev{MIN_EV:g}-g{MIN_GAP_PTS:g}"
 
 TRACKER_COLS = [
     "record_key", "frozen_at", "season", "week", "game_id", "kickoff",
@@ -159,6 +181,7 @@ TRACKER_COLS = [
     "status", "result", "units_result", "result_margin",
     "final_home_score", "final_away_score",
     "closing_line", "clv_points", "closing_captured_at", "graded_at",
+    "kickoff_utc",
 ]
 
 st.set_page_config(page_title="Sunday Edge", page_icon="🏈", layout="wide")
@@ -449,7 +472,7 @@ def fetch_live_odds(_bust=0):
                         if mk.get("key") == "h2h" and pr is not None:
                             _t = ODDS_TEAM.get(o.get("name"))
                             if _t in (h, a):
-                                mls.append((_t, float(pr)))
+                                mls.append((_t, float(pr), book))
                             continue
                         if pt is None or pr is None:
                             continue
@@ -476,6 +499,99 @@ def lookup_offers(offers, away, home):
         if (a, h) in offers:
             return offers[(a, h)]
     return None
+
+
+def _american_to_prob(o):
+    o = float(o)
+    return 100.0 / (o + 100.0) if o > 0 else -o / (-o + 100.0)
+
+
+def _prob_to_american(p):
+    p = min(max(float(p), 1e-6), 1 - 1e-6)
+    return -100.0 * p / (1 - p) if p >= 0.5 else 100.0 * (1 - p) / p
+
+
+def american_payout(odds, default=ASSUMED_PRICE):
+    """Profit per unit staked on a win. Falls back to the assumed price when
+    the stored odds are missing, which is what old -110 rows were."""
+    try:
+        o = float(odds)
+        if not math.isfinite(o) or o == 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        o = float(default)
+    return (100.0 / abs(o)) if o < 0 else (o / 100.0)
+
+
+def consensus_offers(offers, price=ASSUMED_PRICE, label="consensus"):
+    """
+    One synthetic book: the median number across every book, both sides at
+    `price`. This is the honest default when your own book is not in the
+    feed -- your book posts roughly the consensus number, and pricing each
+    pick at the single best number anywhere overstates every edge you log.
+    """
+    out = {}
+    for k, v in (offers or {}).items():
+        away, home = k
+        sp = v.get("spreads", []) or []
+        hp = [p for t, p, _, _ in sp if t == home]
+        ap = [-p for t, p, _, _ in sp if t != home]
+        pts = hp + ap                      # all stated from the home side
+        spreads = []
+        if pts:
+            m = float(np.median(pts))
+            spreads = [(home, m, float(price), label),
+                       (away, -m, float(price), label)]
+        tt = [p for _, p, _, _ in (v.get("totals", []) or [])]
+        totals = []
+        if tt:
+            m = float(np.median(tt))
+            totals = [("OVER", m, float(price), label),
+                      ("UNDER", m, float(price), label)]
+        mls = []
+        for team in (home, away):
+            ps = [_american_to_prob(pr) for t, pr, *_ in
+                  (v.get("moneylines", []) or []) if t == team]
+            if ps:
+                mls.append((team, round(_prob_to_american(np.median(ps))),
+                            label))
+        out[k] = {"spreads": spreads, "totals": totals, "moneylines": mls,
+                  "commence": v.get("commence")}
+    return out
+
+
+def filter_offers(offers, book):
+    """Keep one book's offers, moneylines included."""
+    return {
+        k: {"spreads": [r for r in v.get("spreads", []) if r[3] == book],
+            "totals": [r for r in v.get("totals", []) if r[3] == book],
+            "moneylines": [r for r in v.get("moneylines", [])
+                           if len(r) > 2 and r[2] == book],
+            "commence": v.get("commence")}
+        for k, v in (offers or {}).items()
+    }
+
+
+def kickoff_utc(kickoff, commence=None):
+    """
+    Kickoff as a UTC timestamp. nflverse gameday/gametime are EASTERN local
+    times with no zone attached; parsing them with utc=True (as the old code
+    did) put every kickoff 4-5 hours early. The odds feed's commence_time is
+    true UTC, so it wins when we have it.
+    """
+    if commence:
+        t = pd.to_datetime(commence, errors="coerce", utc=True)
+        if pd.notna(t):
+            return t
+    t = pd.to_datetime(kickoff, errors="coerce")
+    if pd.isna(t):
+        return pd.NaT
+    if t.tzinfo is None:
+        try:
+            t = t.tz_localize("America/New_York")
+        except Exception:
+            return pd.NaT
+    return t.tz_convert("UTC")
 
 
 def best_offer(cands, fair, sd):
@@ -750,6 +866,35 @@ def norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
+def qb_delta(season, week, h, a):
+    """Points added to the home margin for a quarterback downgrade on either
+    side. Zero when the QB measurement file is absent. Returns (delta, note)."""
+    adj = load_qb_adjustment()
+    if not adj:
+        return 0.0, None
+    pen = float(adj["penalty_points"])
+    stat = qb_status(season, week)
+    h_out = bool(stat.get(str(h), {}).get("penalise"))
+    a_out = bool(stat.get(str(a), {}).get("penalise"))
+    d = (-pen if h_out else 0.0) + (pen if a_out else 0.0)
+    who = [t for t, o in ((h, h_out), (a, a_out)) if o]
+    return d, (f"backup QB: {', '.join(who)}" if who else None)
+
+
+def assign_tiers(card):
+    """OFFICIAL = positive value at your price. WATCH = big disagreement that
+    does not beat the vig. Everything else is on the board but not tracked."""
+    if card.empty:
+        card["bet_tier"] = pd.Series(dtype=object)
+        return card
+    gap = (pd.to_numeric(card["model_line"], errors="coerce")
+           - pd.to_numeric(card["bet_line"], errors="coerce")).abs()
+    ev = pd.to_numeric(card["expected_value"], errors="coerce")
+    tier = np.where(ev >= MIN_EV, "OFFICIAL",
+                    np.where(gap >= MIN_GAP_PTS, "WATCH", None))
+    return card.assign(gap_pts=gap, bet_tier=tier)
+
+
 def build_card(sched, season, week, sign, offers=None):
     rt = build_ratings(sched, season, week)
     if rt is None:
@@ -774,8 +919,8 @@ def build_card(sched, season, week, sign, offers=None):
 
         h_out = bool(_qb_stat.get(str(h), {}).get("penalise"))
         a_out = bool(_qb_stat.get(str(a), {}).get("penalise"))
-        qb_delta = (-_qb_pen if h_out else 0.0) + (_qb_pen if a_out else 0.0)
-        raw_model = (rt["margin"][h] - rt["margin"][a] + rt["hfa"]) + qb_delta
+        _qbd = (-_qb_pen if h_out else 0.0) + (_qb_pen if a_out else 0.0)
+        raw_model = (rt["margin"][h] - rt["margin"][a] + rt["hfa"]) + _qbd
         mkt = sign * g["spread_line"] if pd.notna(g.get("spread_line")) else None
         live = lookup_offers(offers, a, h) if offers else None
 
@@ -826,7 +971,8 @@ def build_card(sched, season, week, sign, offers=None):
                               f"{line_for_side:+.1f}",
                 "bet_line": float(mkt), "model_line": float(raw_model),
                 "edge_pts": float(edge), "cover_prob": p,
-                "expected_value": ev_from_prob(p), "odds": -110,
+                "expected_value": ev_from_prob(p, ASSUMED_PRICE),
+                "odds": ASSUMED_PRICE,
             })
 
         # TOTAL — live books first
@@ -868,7 +1014,9 @@ def build_card(sched, season, week, sign, offers=None):
         if rt["total"] and pd.notna(g.get("total_line")):
             raw_total = rt["total"].get(h, 0.0) + rt["total"].get(a, 0.0) + rt["tbase"]
             mt = float(g["total_line"])
-            fair_t = mt + MODEL_WEIGHT * (raw_total - mt)
+            _mph = fetch_wind(h, f"{g.get('gameday','')} {g.get('gametime','')}")
+            _wadj = wind_adjustment(_mph)
+            fair_t = mt + MODEL_WEIGHT * (raw_total - mt) + _wadj
             edge_t = fair_t - mt
             side = "OVER" if edge_t > 0 else "UNDER"
             p = norm_cdf(abs(edge_t) / SD_TOTAL)
@@ -877,10 +1025,14 @@ def build_card(sched, season, week, sign, offers=None):
                 "kickoff": f"{g.get('gameday','')} {g.get('gametime','')}".strip(),
                 "matchup": f"{a} @ {h}", "home_team": h, "away_team": a,
                 "market_type": "TOTAL", "pick_side": side,
-                "pick_label": f"{side.title()} {mt:g}",
+                "wind_mph": _mph, "wind_adj": _wadj,
+                "pick_label": f"{side.title()} {mt:g}"
+                              + (f" \u00b7 {_mph:.0f}mph wind"
+                                 if _wadj else ""),
                 "bet_line": mt, "model_line": float(raw_total),
                 "edge_pts": float(edge_t), "cover_prob": p,
-                "expected_value": ev_from_prob(p), "odds": -110,
+                "expected_value": ev_from_prob(p, ASSUMED_PRICE),
+                "odds": ASSUMED_PRICE,
             })
 
     card = pd.DataFrame(rows)
@@ -896,8 +1048,16 @@ def build_card(sched, season, week, sign, offers=None):
     # exists to answer, which is whether these picks land on the right side
     # more than 52.4% of the time. That gets settled by the record, not by
     # a threshold.
-    card["bet_tier"] = "OFFICIAL"
-    return card[card["bet_tier"].notna()].copy(), rt
+    # v1.2: the old code tagged EVERY row OFFICIAL here, so "Freeze" logged
+    # the whole slate (~30 markets) while the card showed ~7. The tracker was
+    # measuring a different set of bets than the one on screen.
+    card = assign_tiers(card)
+    # Qualifying rows first, then by disagreement.
+    card["_tier_rank"] = card["bet_tier"].map(
+        {"OFFICIAL": 0, "WATCH": 1}).fillna(2)
+    card = card.sort_values(["_tier_rank", "abs_edge"],
+                            ascending=[True, False]).drop(columns="_tier_rank")
+    return card.reset_index(drop=True), rt
 
 
 # ----------------------------------------------------------------------
@@ -906,12 +1066,15 @@ def build_card(sched, season, week, sign, offers=None):
 def freeze(card, tracker):
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     existing = set(tracker["record_key"].astype(str)) if not tracker.empty else set()
+    # Base keys already logged in EITHER ledger. Without this, a market frozen
+    # as WATCH on Wednesday and OFFICIAL on Sunday is counted twice.
+    existing_base = {k[:-2] if k.endswith("|W") else k for k in existing}
+    card = card[card["bet_tier"].isin(["OFFICIAL", "WATCH"])]
     new = []
     for _, r in card.iterrows():
-        key = f"{r['game_id']}|{r['market_type']}"
-        if r["bet_tier"] != "OFFICIAL":
-            key += "|W"
-        if key in existing:
+        base = f"{r['game_id']}|{r['market_type']}"
+        key = base + ("" if r["bet_tier"] == "OFFICIAL" else "|W")
+        if base in existing_base:
             continue
         row = {c: None for c in TRACKER_COLS}
         row.update({
@@ -935,86 +1098,71 @@ def freeze(card, tracker):
 
 def capture_closing(tracker, offers, sched=None):
     """
-    Record the market number at kickoff, so CLV means something.
+    Record the market number just BEFORE kickoff, so CLV means something.
 
-    The docstring at the top of this file claimed "real closing-line
-    capture" as a lesson carried over from the college app. It was not
-    implemented: closing_line, clv_points and closing_captured_at existed in
-    TRACKER_COLS and nothing ever wrote them.
+    v1.2 rewrite. The previous version only wrote rows whose kickoff had
+    PASSED, and it parsed the nflverse kickoff (Eastern, no zone) as UTC --
+    4-5 hours early. So a "close" was whatever the feed showed some time
+    after 9am ET on a 1pm game: sometimes a pregame number, often a LIVE
+    in-game line, because the Odds API keeps returning in-play odds for
+    games in progress. The "clean, within 3 hours" bucket was mostly the
+    in-game ones.
 
-    That matters more here than for college. The NFL backtest measured
-    +0.099 with t = 1.19 over 4,254 games, and at ~100 bets a season the
-    win-loss record will never settle anything. Closing line value is the
-    only thing that can answer the question inside one season.
+    Now:
+      * Every pull before kickoff OVERWRITES the snapshot, so the stored
+        close is the last pregame number the app saw.
+      * Once kickoff passes the snapshot is frozen and never rewritten.
+      * Games the feed already shows as started are ignored entirely.
+      * The close is the consensus median across all books -- the market's
+        number, not one book's shading.
 
-    Two rules learned the hard way from Saturday Edge:
-
-      * Capture at KICKOFF, not at grading. A number pulled whenever the app
-        next happens to run is not a closing line, and treating it as one
-        produced a statistically significant CLV that turned out to be an
-        artifact of when the page was opened.
-
-      * Stamp WHEN. Without the timestamp there is no way to tell a clean
-        capture from a stale one, so the lag is recorded and the display
-        buckets on it.
-
-    Only rows whose kickoff has passed and that have no closing line yet are
-    touched; a captured line is never rewritten.
+    Limitation: the app only pulls when it is open. For a real close, open
+    the Tracker in the hour before each kickoff window. The CLV panel only
+    counts snapshots taken within 3 hours before kickoff as clean.
     """
     if tracker is None or tracker.empty or not offers:
         return tracker, 0
     df = tracker.copy()
-    now = datetime.now(timezone.utc)
-
-    cl = pd.to_numeric(df.get("closing_line"), errors="coerce")
-    todo = cl.isna()
-    if not todo.any():
-        return df, 0
+    now = pd.Timestamp.now(tz="UTC")
 
     n = 0
-    for idx in df[todo].index:
-        kick = pd.to_datetime(df.at[idx, "kickoff"], errors="coerce", utc=True)
-        if pd.isna(kick) or kick > now:
+    for idx in df.index:
+        if str(df.at[idx, "status"]).upper() == "GRADED":
             continue
         off = lookup_offers(offers, str(df.at[idx, "away_team"]),
                             str(df.at[idx, "home_team"]))
         if not off:
             continue
+        kick = kickoff_utc(df.at[idx, "kickoff"], off.get("commence"))
+        if pd.isna(kick) or kick <= now:
+            continue          # started: whatever is stored is final
         mt = str(df.at[idx, "market_type"]).upper()
         side = str(df.at[idx, "pick_side"]).upper()
         home = str(df.at[idx, "home_team"])
-        # fetch_live_odds stores spreads as (team, point, price, book) and
-        # totals as (OVER|UNDER, point, price, book). Consensus close is the
-        # median point across books, stated from the HOME side for spreads so
-        # it is on the same footing as the frozen bet_line.
         pts = []
         if mt == "TOTAL":
-            for nm, pt, _pr, _bk in off.get("totals", []) or []:
+            for _nm, pt, _pr, _bk in off.get("totals", []) or []:
                 if math.isfinite(float(pt)):
                     pts.append(float(pt))
         else:
-            # The book states a home favourite as -4.5; bet_line is stored in
-            # nflverse convention, +4.5. Negate, exactly as build_card does,
-            # so the close and the frozen line are on the same scale.
+            # Book states a home favourite as -4.5; bet_line is nflverse
+            # convention (+4.5). Negate so both are on the same scale. The
+            # away side's point is already the home-favoured number.
             for team, pt, _pr, _bk in off.get("spreads", []) or []:
-                if str(team) == home and math.isfinite(float(pt)):
-                    pts.append(-float(pt))
+                if not math.isfinite(float(pt)):
+                    continue
+                pts.append(-float(pt) if str(team) == home else float(pt))
         if not pts:
             continue
-        close = float(np.median(pts))
+        close = round(float(np.median(pts)), 2)
 
         try:
             bl = float(df.at[idx, "bet_line"])
         except (TypeError, ValueError):
             continue
-        # Positive CLV means the number moved in the bet's favour. Both
-        # numbers are in nflverse convention here: + means home favoured by
-        # that much.
-        #
-        # HOME backer LAYS the number, so they want to have taken a smaller
-        # one than the close: took home -3, it closed -4.25, that is +1.25.
-        # AWAY backer RECEIVES the number, so the reverse: took +3 when it
-        # closed +4.25 means they got less than they could have, -1.25.
+        # Positive CLV = the number moved in the bet's favour.
+        # HOME lays the number: took -3, closed -4.25 -> +1.25.
+        # AWAY receives it: took +3, closed +4.25 -> -1.25.
         if mt == "TOTAL":
             clv = (close - bl) if side == "OVER" else (bl - close)
         elif side == "HOME":
@@ -1022,10 +1170,18 @@ def capture_closing(tracker, offers, sched=None):
         else:
             clv = bl - close
 
-        df.at[idx, "closing_line"] = round(close, 2)
+        prev = pd.to_numeric(pd.Series([df.at[idx, "closing_line"]]),
+                             errors="coerce").iloc[0]
+        df.at[idx, "closing_line"] = close
         df.at[idx, "clv_points"] = round(float(clv), 2)
         df.at[idx, "closing_captured_at"] = now.isoformat(timespec="seconds")
-        n += 1
+        # Store kickoff in UTC too, so the lag can be measured correctly
+        # later without re-deriving the zone.
+        df.at[idx, "kickoff_utc"] = kick.isoformat()
+        if pd.isna(prev) or float(prev) != close:
+            n += 1
+    # Only write to the sheet when a number actually moved; the timestamp
+    # refresh alone rides along with the next real save.
     return (save_tracker(df), n) if n else (df, 0)
 
 
@@ -1056,14 +1212,29 @@ def clv_summary(df):
         out["sd"] = float(cc.std(ddof=1))
         out["t"] = out["mean"] / (out["sd"] / math.sqrt(len(cc)))
 
-    kick = pd.to_datetime(df.loc[ok, "kickoff"], errors="coerce", utc=True)
-    cap = pd.to_datetime(df.loc[ok, "closing_captured_at"],
-                         errors="coerce", utc=True)
-    lag_h = (cap - kick).dt.total_seconds() / 3600.0
-    clean = lag_h.notna() & (lag_h <= 3.0)
+    # Clean = snapshot taken in the 3 hours BEFORE kickoff. Kickoff comes
+    # from the stored UTC time when present; otherwise the nflverse string
+    # is read as Eastern (it used to be read as UTC, 4-5 hours off). Rows
+    # captured after kickoff -- every pre-v1.2 capture -- are in-game lines
+    # and never count.
+    sub = df.loc[ok]
+    ku = (sub["kickoff_utc"] if "kickoff_utc" in sub.columns
+          else pd.Series(None, index=sub.index))
+    kick = pd.Series([kickoff_utc(k, c if isinstance(c, str) and c else None)
+                      for k, c in zip(sub["kickoff"], ku)], index=sub.index)
+    kick = pd.to_datetime(kick, errors="coerce", utc=True)
+    cap = pd.to_datetime(sub["closing_captured_at"], errors="coerce", utc=True)
+    lead_h = (kick - cap).dt.total_seconds() / 3600.0
+    clean = lead_h.notna() & (lead_h >= 0) & (lead_h <= 3.0)
     out["n_clean"] = int(clean.sum())
+    # The signal-strength number is computed on clean captures only; mixing
+    # in stale or in-game closes is exactly what fooled the college app.
+    out["t"] = float("nan")
     if out["n_clean"]:
-        out["clean_mean"] = float(cc[clean.values].mean())
+        c2 = cc[clean.values]
+        out["clean_mean"] = float(c2.mean())
+        if len(c2) > 1 and c2.std(ddof=1) > 0:
+            out["t"] = out["clean_mean"] / (c2.std(ddof=1) / math.sqrt(len(c2)))
     return out
 
 
@@ -1110,7 +1281,11 @@ def grade(tracker, sched):
             m = (as_ - hs) + bl
 
         res = "PUSH" if abs(m) < 1e-9 else ("WIN" if m > 0 else "LOSS")
-        units = 0.0 if res == "PUSH" else (100 / 110 if res == "WIN" else -1.0)
+        # Pay at the price recorded when the bet was frozen. This was a flat
+        # 100/110, so a +100 or -120 pick was graded as if it were -110.
+        units = (0.0 if res == "PUSH" else
+                 (american_payout(df.at[idx, "odds"]) if res == "WIN"
+                  else -1.0))
         df.at[idx, "final_home_score"] = hs
         df.at[idx, "final_away_score"] = as_
         df.at[idx, "result_margin"] = round(m, 2)
@@ -1151,15 +1326,13 @@ def ml_flags(sched, season, week, rt, sign, offers):
         live = lookup_offers(offers, a, h)
         if not live:
             continue
-        raw = rt["margin"][h] - rt["margin"][a] + rt["hfa"]
+        raw = (rt["margin"][h] - rt["margin"][a] + rt["hfa"]
+               + qb_delta(season, week, h, a)[0])
         p_home = norm_cdf(raw / SD_MARGIN)
         for team, prob in ((h, p_home), (a, 1.0 - p_home)):
             price = None
-            for side, pt, pr, bk in live.get("spreads", []):
-                pass
-            mls = live.get("moneylines") or []
-            for nm, pr in mls:
-                if nm == team:
+            for nm, pr, *_ in (live.get("moneylines") or []):
+                if nm == team and (price is None or pr > price):
                     price = pr
             if price is None:
                 continue
@@ -1696,20 +1869,25 @@ except Exception as e:
 live_offers, credits_left, odds_err = fetch_live_odds(
     _bust=st.session_state.get("bust", 0))
 
-# Price at one book, since that is where the bets actually get placed.
-_books = sorted({bk for o in (live_offers or {}).values()
+# Price at the book you actually bet. The default used to be "Best of all
+# books", which logged every pick at the single best number and price anywhere
+# in the feed -- numbers you cannot get at 734 Games, so every edge and every
+# graded unit was overstated. The default is now the consensus number at
+# ASSUMED_PRICE. The unfiltered feed is kept for closing lines, which should
+# be the market's number, not one book's.
+all_offers = live_offers or {}
+_books = sorted({bk for o in all_offers.values()
                  for _, _, _, bk in (o.get("spreads", []) + o.get("totals", []))})
 if _books:
-    _book = st.selectbox("Your book", ["Best of all books"] + _books,
-                         key="se_book")
-    if _book != "Best of all books":
-        live_offers = {
-            k: {"spreads": [r for r in v.get("spreads", []) if r[3] == _book],
-                "totals": [r for r in v.get("totals", []) if r[3] == _book],
-                "moneylines": v.get("moneylines", []),
-                "commence": v.get("commence")}
-            for k, v in live_offers.items()
-        }
+    _book = st.selectbox(
+        "Your book", [CONSENSUS_LABEL] + _books + ["Best of all books"],
+        key="se_book",
+        help="734 Games is not in the odds feed, so the consensus line is "
+             "the closest stand-in. Check your book's number before betting.")
+    if _book == CONSENSUS_LABEL:
+        live_offers = consensus_offers(all_offers, ASSUMED_PRICE)
+    elif _book != "Best of all books":
+        live_offers = filter_offers(all_offers, _book)
 if odds_err == "no key":
     st.info("Add `odds_api_key` to Streamlit secrets for live multi-book "
             "lines and line shopping. Using nflverse lines for now.")
@@ -1797,18 +1975,14 @@ with tab_slate:
 
         def _rows(df, n=None):
             """
-            Everything where the model sits at least MIN_GAP_PTS from the
-            line, ranked. Not a fixed top three — some weeks the board is
-            full of disagreements and some weeks it is not, and the card
-            should say so.
+            Bets (positive value at your price) first, then watch-list
+            markets (MIN_GAP_PTS+ off the line but not beating the vig).
+            Same rule build_card tiers on and freeze logs, so what is on
+            screen is exactly what the tracker records.
             """
             if df.empty:
                 return [], 0
-            d = df.assign(
-                _gap=(pd.to_numeric(df["model_line"], errors="coerce")
-                      - pd.to_numeric(df["bet_line"], errors="coerce")).abs())
-            d = d[d["_gap"] >= MIN_GAP_PTS].sort_values("_gap",
-                                                        ascending=False)
+            d = df[df["bet_tier"].isin(["OFFICIAL", "WATCH"])]
             return list(d.iterrows()), len(d)
 
         _sp, _nsp = _rows(card[card["market_type"] == "SPREAD"])
@@ -1833,7 +2007,8 @@ with tab_slate:
         _h = [f'<div class="sc-wrap">'
               f'<div class="sc-top"><h2>Top picks</h2>'
               f'<span>{_html.escape(_kick)} \u00b7 {_n} plays \u00b7 '
-              f'{MIN_GAP_PTS:g}+ pts off the line</span></div>']
+              f'bets beat the vig \u00b7 watch = {MIN_GAP_PTS:g}+ pts off'
+              f'</span></div>']
 
         # Say what the quarterback adjustment did. If it is not applied, say
         # that too — a reader should never have to guess whether a pick
@@ -1893,9 +2068,11 @@ with tab_slate:
                     kick = pd.to_datetime(kick).strftime("%-I:%M %p")
                 except Exception:
                     pass
+                _tag = ("" if r.get("bet_tier") == "OFFICIAL"
+                        else "Watch \u00b7 ")
                 _h.append(
                     f'<div class="sc-row"><div class="sc-rank">{i}</div>'
-                    f'<div class="sc-main"><b>{_html.escape(str(r["pick_label"]))}</b>'
+                    f'<div class="sc-main"><b>{_html.escape(_tag + str(r["pick_label"]))}</b>'
                     f'<small>{_html.escape(str(r["matchup"]))}'
                     f'{" \u00b7 " + _html.escape(kick) if kick else ""}</small></div>'
                     f'<div class="sc-num"><b>{odds:+d}</b>'
@@ -1919,14 +2096,17 @@ with tab_slate:
             f'</div></div>')
         st.markdown("".join(_h), unsafe_allow_html=True)
 
-        _bets = card[card["bet_tier"] == "OFFICIAL"] if not card.empty else card
+        _bets = (card[card["bet_tier"].isin(["OFFICIAL", "WATCH"])]
+                 if not card.empty else card)
         with st.expander("Detail"):
             for _, r in (_sp + _to):
-                render_row(r, "Bet" if float(r["expected_value"]) >= MIN_EV
-                           else "Lean")
+                render_row(r, "Bet" if r.get("bet_tier") == "OFFICIAL"
+                           else "Watch")
 
-        if not _bets.empty and st.button("Freeze qualifying bets",
-                                         use_container_width=True):
+        _n_off = int((_bets["bet_tier"] == "OFFICIAL").sum()) if len(_bets) else 0
+        if not _bets.empty and st.button(
+                f"Freeze card ({_n_off} bets, {len(_bets) - _n_off} watch)",
+                use_container_width=True):
             tr, n = freeze(_bets, load_tracker())
             st.success(f"Froze {n} new bets." if n else "Nothing new to freeze.")
 
@@ -1951,7 +2131,8 @@ with tab_game:
         h, a = row["home_team"], row["away_team"]
         rh, ra = rt_g["margin"].get(h, 0.0), rt_g["margin"].get(a, 0.0)
         hfa = rt_g["hfa"]
-        raw = rh - ra + hfa
+        _qbd_g, _qb_note_g = qb_delta(g_season, g_week, h, a)
+        raw = rh - ra + hfa + _qbd_g
 
         def _say(v, unit):
             """A margin as plain English, so there is no sign to misread."""
@@ -1974,8 +2155,11 @@ with tab_game:
             # so a game could be "no bet" here and on the card at the same
             # time.
             _gap = abs(model - mkt)
-            if _gap >= MIN_GAP_PTS:
+            if e is not None and e >= MIN_EV:
                 st.success(f"**Bet {lean}.**")
+            elif _gap >= MIN_GAP_PTS:
+                st.warning(f"**Watch {lean}** \u2014 big disagreement, but "
+                           f"the edge does not beat the vig.")
             else:
                 st.info("**Don't bet.**")
             # Say it in words. The model works in margins (positive = home
@@ -2017,6 +2201,8 @@ with tab_game:
             f"{h} {rh:+.2f} · {a} {ra:+.2f} · home field {hfa:+.2f} — "
             f"fit on {rt_g['n_prior']:,} games, {rt_g['n_in_season']} of them "
             f"this season ({rt_g['in_season_weight']:.0%} weight)."
+            + (f" Adjusted for {_qb_note_g} ({_qbd_g:+.1f})." if _qb_note_g
+               else "")
         )
 
         if pd.notna(row.get("spread_line")):
@@ -2036,7 +2222,12 @@ with tab_game:
             th = rt_g["total"].get(h, 0.0); ta = rt_g["total"].get(a, 0.0)
             raw_t = th + ta + rt_g["tbase"]
             mt = float(row["total_line"])
-            edge_t = MODEL_WEIGHT * (raw_t - mt)
+            _mph_g = fetch_wind(h, f"{row.get('gameday','')} {row.get('gametime','')}")
+            _wadj_g = wind_adjustment(_mph_g)
+            edge_t = MODEL_WEIGHT * (raw_t - mt) + _wadj_g
+            if _wadj_g:
+                st.caption(f"Wind {_mph_g:.0f} mph: {_wadj_g:+.2f} pts on the "
+                           f"total after the forecast haircut.")
             lean = f"Over {mt:g}" if edge_t > 0 else f"Under {mt:g}"
             verdict_block("Total", edge_t, norm_cdf(abs(edge_t) / SD_TOTAL),
                           ev_from_prob(norm_cdf(abs(edge_t) / SD_TOTAL)),
@@ -2050,14 +2241,14 @@ with tab_game:
 
 with tab_tracker:
     tr = load_tracker()
-    # Capture BEFORE grading: a game can finish and be graded on the same
-    # load, and the close has to be recorded at kickoff either way.
-    tr, _ncap = capture_closing(tr, live_offers)
+    # Snapshot pregame numbers on every load; after kickoff the last
+    # snapshot is the close and is never touched again.
+    tr, _ncap = capture_closing(tr, all_offers)
     tr, n = grade(tr, sched_all)
     if n:
         st.success(f"Graded {n} completed bets.")
     if _ncap:
-        st.caption(f"Captured the closing number on {_ncap} bet(s).")
+        st.caption(f"Updated the pregame closing snapshot on {_ncap} bet(s).")
 
     ws, err = _sheet(return_error=True)
     if ws is None:
@@ -2136,16 +2327,17 @@ with tab_tracker:
         )
         if _clv["n_clean"] < 30:
             st.caption(
-                f"{_clv['n_clean']} of {_clv['n']} closes were captured within "
-                "3 hours of kickoff. Only those are a real measurement — a "
+                f"{_clv['n_clean']} of {_clv['n']} closes were snapshotted in "
+                "the 3 hours before kickoff. Only those are a real measurement — a "
                 "number pulled whenever the app happened to run is not a "
                 "closing line. Nothing here counts as evidence until roughly "
                 "100 clean captures, whatever the sign."
             )
         elif math.isfinite(_clv["t"]):
             st.caption(
-                f"Signal strength {_clv['t']:+.2f} on {_clv['n_clean']} "
-                "kickoff-captured bets — above +2.00 would be meaningful."
+                f"Clean closes average {_clv['clean_mean']:+.2f} pts. Signal "
+                f"strength {_clv['t']:+.2f} on {_clv['n_clean']} pregame "
+                "captures — above +2.00 would be meaningful."
             )
 
     if tr.empty:
