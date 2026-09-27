@@ -547,7 +547,7 @@ def measure(seasons=None, nfl=None, log=print):
     bt, set_, sdt = _fit(Xt, g["total"].values.astype(float), 4)
 
     out = {
-        "version": 4,
+        "version": 5,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "seasons": [seasons[0], seasons[-1]],
         "n_games": n,
@@ -590,6 +590,14 @@ def measure(seasons=None, nfl=None, log=print):
     except Exception as e:
         log(f"QB ratings not measured: {type(e).__name__}: {e}")
         out["qb_error"] = f"{type(e).__name__}: {e}"
+
+    # Weather. Optional in the same way: failure leaves wind-only behaviour.
+    try:
+        out["weather"] = measure_weather(sched, [s_ for s_ in seasons if s_ >= 2015],
+                                         log=log)
+    except Exception as e:
+        log(f"Weather not measured: {type(e).__name__}: {e}")
+        out["weather_error"] = f"{type(e).__name__}: {e}"
     log(json.dumps(out, indent=2))
     return out
 
@@ -948,9 +956,278 @@ def load_pbp(nfl, seasons):
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+# ======================================================================
+# Weather: wind, rain, cold and snow over the whole game window
+#
+# Every effect is measured on history twice, with a strength term for each
+# team-season: against actual scoring (what it is worth) and against the
+# closing total (whether the market already prices it). How each is applied
+# follows from which test it passed:
+#   * beats the close    -> moves the fair line directly, with a forecast-
+#                           error haircut (how wind has always been handled);
+#   * only explains scoring the market already prices -> goes into the
+#                           model's raw line, so a storm stops producing
+#                           false Overs, and passes through the 0.099 blend;
+#   * neither            -> not used.
+#
+# Domes are respected: fixed domes never get weather. A retractable roof
+# counts as open only when the schedule says so; otherwise it is assumed
+# closed, because roofs close in exactly the weather that would matter.
+# Neutral-site games use the actual venue, or no weather if it is unknown.
+# ======================================================================
+WX_MIN_T = 2.0
+WX_FORECAST_DISCOUNT = 0.40   # same haircut the wind effect earned
+WX_COLD_BELOW_F = 40.0
+WX_HOURS = 4                  # kickoff hour plus the next three
+WX_FEATURES = ("wind", "rain", "cold", "snow")
+WX_SIGN = {"wind": -1, "rain": -1, "cold": -1, "snow": -1}
+WX_LABEL = {"wind": "wind", "rain": "rain", "cold": "cold", "snow": "snow"}
+
+FIXED_DOME = {"DET", "MIN", "NO", "LV", "LA", "LAR", "LAC"}
+RETRACTABLE = {"ARI", "ATL", "DAL", "HOU", "IND"}
+# Former homes still in the history (nflverse keeps the old codes).
+HIST_COORDS = {"OAK": (37.751, -122.201), "SD": (32.783, -117.120)}
+# International and other neutral venues: (lat, lon, roof).
+INTL_VENUES = {
+    "wembley": (51.556, -0.280, "outdoors"),
+    "tottenham": (51.604, -0.066, "outdoors"),
+    "twickenham": (51.456, -0.342, "outdoors"),
+    "allianz": (48.219, 11.625, "outdoors"),
+    "deutsche bank": (50.069, 8.645, "outdoors"),
+    "frankfurt": (50.069, 8.645, "outdoors"),
+    "azteca": (19.303, -99.150, "outdoors"),
+    "banorte": (19.303, -99.150, "outdoors"),
+    "corinthians": (-23.545, -46.474, "outdoors"),
+    "neo qu": (-23.545, -46.474, "outdoors"),
+    "croke": (53.361, -6.251, "outdoors"),
+    "bernab": (40.453, -3.688, "retractable"),
+    "olympiastadion": (52.515, 13.239, "outdoors"),
+    "melbourne": (-37.820, 144.983, "outdoors"),
+    "maracan": (-22.912, -43.230, "outdoors"),
+    "stade de france": (48.924, 2.360, "outdoors"),
+}
+WX_HOURLY = ("wind_speed_10m,wind_gusts_10m,precipitation,temperature_2m,"
+             "snowfall")
+
+
+def game_venue(row):
+    """
+    (lat, lon, status, where) for a schedule row. status is "outdoor",
+    "indoor", or "unknown" (neutral venue we cannot place).
+    """
+    roof = str(row.get("roof", "") or "").lower().strip()
+    loc = str(row.get("location", "") or "").lower().strip()
+    home_raw = str(row.get("home_team", "")).upper().strip()
+    home = canon(home_raw)
+    if loc == "neutral":
+        name = str(row.get("stadium", "") or "").lower()
+        for k_, (la, lo, kind) in INTL_VENUES.items():
+            if k_ in name:
+                if roof in ("dome", "closed") or (kind == "retractable"
+                                                  and roof != "open"):
+                    return la, lo, "indoor", name
+                return la, lo, "outdoor", name
+        if roof in ("dome", "closed"):
+            return None, None, "indoor", name
+        return None, None, "unknown", name or "neutral site"
+    if home_raw in HIST_COORDS:
+        la, lo = HIST_COORDS[home_raw]
+    elif home in STADIUM:
+        la, lo = STADIUM[home][0], STADIUM[home][1]
+    else:
+        return None, None, "unknown", home
+    if roof in ("dome", "closed"):
+        return la, lo, "indoor", home
+    if roof in ("outdoors", "open"):
+        return la, lo, "outdoor", home
+    # Roof not recorded (typical for upcoming games): go by the building.
+    if home in FIXED_DOME or home in RETRACTABLE:
+        return la, lo, "indoor", home
+    return la, lo, "outdoor", home
+
+
+def _wx_frame(js):
+    h = (js or {}).get("hourly", {})
+    if not h or not h.get("time"):
+        return pd.DataFrame()
+    return pd.DataFrame({
+        "time": pd.to_datetime(pd.Series(h["time"])),
+        "wind": pd.to_numeric(pd.Series(h.get("wind_speed_10m")), errors="coerce"),
+        "gust": pd.to_numeric(pd.Series(h.get("wind_gusts_10m")), errors="coerce"),
+        "precip": pd.to_numeric(pd.Series(h.get("precipitation")), errors="coerce"),
+        "temp": pd.to_numeric(pd.Series(h.get("temperature_2m")), errors="coerce"),
+        "snow": pd.to_numeric(pd.Series(h.get("snowfall")), errors="coerce"),
+    })
+
+
+def wx_request(lat, lon, start, end, archive=False):
+    """Hourly weather from Open-Meteo (free, no key). Times in US Eastern,
+    matching nflverse kickoff times. Returns a DataFrame or empty."""
+    url = ("https://archive-api.open-meteo.com/v1/archive" if archive
+           else "https://api.open-meteo.com/v1/forecast")
+    try:
+        r = requests.get(url, params={
+            "latitude": lat, "longitude": lon, "hourly": WX_HOURLY,
+            "wind_speed_unit": "mph", "temperature_unit": "fahrenheit",
+            "precipitation_unit": "inch", "timezone": "America/New_York",
+            "start_date": str(start), "end_date": str(end)}, timeout=20)
+        if r.status_code != 200:
+            return pd.DataFrame()
+        return _wx_frame(r.json())
+    except Exception:
+        return pd.DataFrame()
+
+
+def window_features(frame, kickoff):
+    """Average wind, peak gust, total rain and snow, average temperature
+    over kickoff and the following hours."""
+    if frame is None or frame.empty or pd.isna(kickoff):
+        return None
+    k0 = pd.Timestamp(kickoff).floor("h")
+    w = frame[(frame["time"] >= k0)
+              & (frame["time"] < k0 + pd.Timedelta(hours=WX_HOURS))]
+    if w.empty or w["wind"].isna().all():
+        return None
+    return {"wind": float(w["wind"].mean()),
+            "gust": float(w["gust"].max()) if w["gust"].notna().any() else None,
+            "precip": float(w["precip"].fillna(0).sum()),
+            "temp": float(w["temp"].mean()) if w["temp"].notna().any() else None,
+            "snow": float(w["snow"].fillna(0).sum())}
+
+
+def wx_vector(f):
+    """The regression features from window features (zeros indoors)."""
+    if not f:
+        return {k_: 0.0 for k_ in WX_FEATURES}
+    return {"wind": float(f["wind"] or 0.0),
+            "rain": float(min(f.get("precip") or 0.0, 0.75)),
+            "cold": float(max(0.0, WX_COLD_BELOW_F - f["temp"]))
+                    if f.get("temp") is not None else 0.0,
+            "snow": float(min(f.get("snow") or 0.0, 3.0))}
+
+
+def kickoff_of(row):
+    try:
+        return pd.to_datetime(f"{row.get('gameday', '')} {row.get('gametime', '')}")
+    except Exception:
+        return pd.NaT
+
+
+def measure_weather(sched, seasons, log=print):
+    """
+    Measure wind, rain, cold and snow against actual totals and against the
+    closing total, on every completed game in these seasons.
+    """
+    g = sched.dropna(subset=["home_score", "away_score"]).copy()
+    g["season"] = pd.to_numeric(g["season"], errors="coerce")
+    g = g[g["season"].isin([int(s) for s in seasons])].reset_index(drop=True)
+    if "roof" not in g.columns:
+        raise RuntimeError("schedule has no roof column")
+    ven = [game_venue(r) for _, r in g.iterrows()]
+    g["lat"] = [v[0] for v in ven]
+    g["lon"] = [v[1] for v in ven]
+    g["wx_status"] = [v[2] for v in ven]
+    g["kick"] = [kickoff_of(r) for _, r in g.iterrows()]
+    out_g = g[(g["wx_status"] == "outdoor") & g["lat"].notna() & g["kick"].notna()]
+    log(f"Fetching historical weather for {len(out_g):,} outdoor games...")
+    feats = {}
+    for (la, lo, s_), grp in out_g.groupby(["lat", "lon", "season"]):
+        start = grp["kick"].min().date()
+        end = (grp["kick"].max() + pd.Timedelta(days=1)).date()
+        fr = wx_request(la, lo, start, end, archive=True)
+        for i, r in grp.iterrows():
+            feats[i] = window_features(fr, r["kick"])
+    got = sum(1 for v in feats.values() if v)
+    if got < 500:
+        raise RuntimeError(f"weather found for only {got} outdoor games")
+    V = pd.DataFrame([wx_vector(feats.get(i)) if g.loc[i, "wx_status"] == "outdoor"
+                      else wx_vector(None) for i in g.index], index=g.index)
+    # Outdoor games whose weather could not be fetched are dropped rather
+    # than treated as calm.
+    keep = ~((g["wx_status"] == "outdoor") & ~g.index.isin(
+        [i for i, v in feats.items() if v]))
+    keep &= g["wx_status"] != "unknown"
+    g, V = g[keep], V[keep]
+    for c_ in ("home_team", "away_team"):
+        g[c_] = g[c_].map(canon)
+    total = (g["home_score"] + g["away_score"]).values.astype(float)
+    cols = list(WX_FEATURES)
+    Xw = V[cols].values
+    one = np.ones((len(g), 1))
+    b, se, _ = _fit(np.hstack([Xw, one, _fe(g, True)]), total, len(cols) + 1)
+    value = {c_: _stat(b[i], se[i]) for i, c_ in enumerate(cols)}
+    market = {}
+    if "total_line" in g.columns:
+        m = pd.to_numeric(g["total_line"], errors="coerce").notna().values
+        if m.sum() > 500:
+            err = total[m] - pd.to_numeric(g["total_line"], errors="coerce").values[m]
+            bm, sem = _ols(np.hstack([Xw[m], one[m]]), err)
+            market = {c_: _stat(bm[i], sem[i]) for i, c_ in enumerate(cols)}
+    out = {"value": value, "market": market, "n_games": int(len(g)),
+           "n_outdoor": int((g["wx_status"] == "outdoor").sum()),
+           "mean": {c_: round(float(V.loc[g["wx_status"] == "outdoor", c_].mean()), 3)
+                    for c_ in cols}}
+    log(f"Weather: {out}")
+    return out
+
+
+def wx_effects(params, vec):
+    """
+    (raw_adj, fair_adj, parts) for a game's weather vector.
+    parts: [(feature, points, "close" | "model")].
+    """
+    raw_adj, fair_adj, parts = 0.0, 0.0, []
+    if not params:
+        return raw_adj, fair_adj, parts
+    for f in WX_FEATURES:
+        x = float(vec.get(f, 0.0) or 0.0)
+        if x == 0.0:
+            continue
+        mc = (params.get("market") or {}).get(f)
+        vl = (params.get("value") or {}).get(f)
+        def _ok(c):
+            try:
+                return (np.sign(c["coef"]) == WX_SIGN[f]
+                        and abs(float(c["t"])) >= WX_MIN_T)
+            except Exception:
+                return False
+        if mc and _ok(mc):
+            pts = float(mc["coef"]) * x * WX_FORECAST_DISCOUNT
+            fair_adj += pts
+            parts.append((f, pts, "close"))
+        elif vl and _ok(vl):
+            pts = float(vl["coef"]) * x
+            raw_adj += pts
+            parts.append((f, pts, "model"))
+    return raw_adj, fair_adj, parts
+
+
+def wx_describe(feat, status, where=""):
+    """Plain-English conditions, e.g. 'Rain 0.40 in, wind 19 mph (gusts 40),
+    62°F'."""
+    if status == "indoor":
+        return "Indoors \u2014 no weather"
+    if status == "unknown":
+        return f"Venue not recognised ({where}) \u2014 no weather applied"
+    if not feat:
+        return "Forecast unavailable \u2014 no weather applied"
+    bits = []
+    if feat.get("snow", 0) >= 0.1:
+        bits.append(f"snow {feat['snow']:.1f} in")
+    if feat.get("precip", 0) >= 0.02:
+        bits.append(f"rain {feat['precip']:.2f} in")
+    gust = feat.get("gust")
+    bits.append(f"wind {feat['wind']:.0f} mph"
+                + (f" (gusts {gust:.0f})" if gust and gust >= feat["wind"] + 8 else ""))
+    if feat.get("temp") is not None:
+        bits.append(f"{feat['temp']:.0f}\u00b0F")
+    s_ = ", ".join(bits)
+    return s_[0].upper() + s_[1:]
+
+
 # Part of every injury cache key: when the position groups change, anything
 # Streamlit cached under the old groups is ignored instead of reused.
-INJ_SCHEMA = "v4:" + ",".join(GROUPS)
+INJ_SCHEMA = "v5:" + ",".join(GROUPS)
 
 inj_mod = types.SimpleNamespace(
     GROUPS=GROUPS, GROUP_LABEL=GROUP_LABEL, usable=usable,
@@ -1123,6 +1400,8 @@ def model_version():
         v += f"-inj{load_injury_adjustment().get('version', 1)}"
         if qb_model_on():
             v += "-qbr1"
+        if (load_injury_adjustment() or {}).get("weather"):
+            v += "-wx1"
     return v
 
 TRACKER_COLS = [
@@ -1577,7 +1856,7 @@ def load_schedules(seasons, _bust=0):
     df = nfl.import_schedules(list(seasons))
     keep = ["game_id", "season", "week", "gameday", "gametime",
             "home_team", "away_team", "home_score", "away_score",
-            "spread_line", "total_line"]
+            "spread_line", "total_line", "roof", "location", "stadium"]
     return df[[c for c in keep if c in df.columns]].copy()
 
 
@@ -1854,9 +2133,9 @@ def qb_delta(season, week, h, a):
 def _valid_injury_adj(d):
     try:
         # v2 added quarterbacks, v3 injured reserve, v4 locked snap shares
-        # and individual QB ratings; older copies re-measure.
+        # and individual QB ratings, v5 weather; older copies re-measure.
         return (isinstance(d, dict) and isinstance(d.get("margin"), dict)
-                and "QB" in d["margin"] and int(d.get("version", 1)) >= 4
+                and "QB" in d["margin"] and int(d.get("version", 1)) >= 5
                 and int(d.get("n_games", 0)) >= 500)
     except Exception:
         return False
@@ -1921,7 +2200,8 @@ def _auto_injury_adjustment(_stamp=0):
             age = INJ_REFRESH_DAYS
         # A copy whose QB ratings failed is retried the next day, not held
         # for a week: that failure is usually a download hiccup.
-        limit = INJ_REFRESH_DAYS if saved.get("qb") else 1
+        limit = (INJ_REFRESH_DAYS if (saved.get("qb") and saved.get("weather"))
+                 else 1)
         if age < limit:
             return saved
     res = inj_mod.measure(nfl=nfl, log=lambda m: None)
@@ -2384,6 +2664,57 @@ def injury_delta(season, week, h, a):
     return dm + qm, dt + qt, note, det
 
 
+# ----------------------------------------------------------------------
+# Weather, live
+# ----------------------------------------------------------------------
+@st.cache_data(ttl=1800, show_spinner=False)
+def _wx_features(lat, lon, kick_iso, archive):
+    k = pd.Timestamp(kick_iso)
+    fr = wx_request(lat, lon, k.date(), (k + pd.Timedelta(days=1)).date(),
+                    archive=archive)
+    return window_features(fr, k)
+
+
+def game_wx(row):
+    """
+    Everything the card needs about one game's weather: conditions, and the
+    points it moves the raw model line and the fair line.
+    """
+    la, lo, status, where = game_venue(row)
+    out = {"status": status, "where": where, "feat": None, "raw_adj": 0.0,
+           "fair_adj": 0.0, "parts": [], "wind": None, "short": ""}
+    if status != "outdoor" or la is None:
+        out["desc"] = wx_describe(None, status, where)
+        return out
+    k = kickoff_of(row)
+    if pd.isna(k):
+        out["desc"] = wx_describe(None, "outdoor")
+        return out
+    old = k < pd.Timestamp.now() - pd.Timedelta(days=7)
+    try:
+        feat = _wx_features(round(la, 3), round(lo, 3), k.isoformat(), bool(old))
+    except Exception:
+        feat = None
+    out["feat"] = feat
+    out["desc"] = wx_describe(feat, "outdoor")
+    if not feat:
+        return out
+    out["wind"] = feat["wind"]
+    params = (load_injury_adjustment() or {}).get("weather")
+    if params:
+        r_, f_, parts = wx_effects(params, wx_vector(feat))
+    else:
+        # Not measured yet: the original wind-only rule, on the game window.
+        f_ = wind_adjustment(feat["wind"])
+        r_, parts = 0.0, ([("wind", f_, "close")] if f_ else [])
+    out.update(raw_adj=r_, fair_adj=f_, parts=parts)
+    if parts:
+        out["short"] = ", ".join(
+            WX_LABEL[p[0]] + (f" {feat['wind']:.0f}mph" if p[0] == "wind" else "")
+            for p in parts)
+    return out
+
+
 def assign_tiers(card):
     """OFFICIAL = positive value at your price. WATCH = big disagreement that
     does not beat the vig. Everything else is on the board but not tracked."""
@@ -2393,8 +2724,17 @@ def assign_tiers(card):
     gap = (pd.to_numeric(card["model_line"], errors="coerce")
            - pd.to_numeric(card["bet_line"], errors="coerce")).abs()
     ev = pd.to_numeric(card["expected_value"], errors="coerce")
+    # A total can point one way on the model and the other after wind (wind
+    # is applied outside the blend). Then the "big disagreement" is in the
+    # opposite direction to the pick, so it is not a watch play.
+    raw_dir = np.sign(pd.to_numeric(card["model_line"], errors="coerce")
+                      - pd.to_numeric(card["bet_line"], errors="coerce"))
+    pick_dir = card["pick_side"].astype(str).str.upper().map(
+        {"OVER": 1.0, "UNDER": -1.0})
+    conflict = (card["market_type"].astype(str).str.upper() == "TOTAL") \
+        & pick_dir.notna() & (raw_dir != pick_dir)
     tier = np.where(ev >= MIN_EV, "OFFICIAL",
-                    np.where(gap >= MIN_GAP_PTS, "WATCH", None))
+                    np.where((gap >= MIN_GAP_PTS) & ~conflict, "WATCH", None))
     return card.assign(gap_pts=gap, bet_tier=tier)
 
 
@@ -2496,8 +2836,9 @@ def build_card(sched, season, week, sign, offers=None):
             # that showed no edge; wind was measured against the closing line
             # and survived out of sample, so it is a different kind of claim
             # and takes its own (forecast-error) haircut instead.
-            _mph = fetch_wind(h, f"{g.get('gameday','')} {g.get('gametime','')}")
-            _wadj = wind_adjustment(_mph)
+            _wx = game_wx(g)
+            raw_total += _wx["raw_adj"]
+            _mph, _wadj = _wx["wind"], _wx["fair_adj"]
             fair_t = mt + MODEL_WEIGHT * (raw_total - mt) + _wadj
             cands = [(nm, ("OVER_LIKE" if nm == "OVER" else "UNDER_LIKE"),
                       p, pr, bk)
@@ -2511,10 +2852,11 @@ def build_card(sched, season, week, sign, offers=None):
                     "matchup": f"{a} @ {h}", "home_team": h, "away_team": a,
                     "market_type": "TOTAL", "pick_side": side,
                     "wind_mph": _mph, "wind_adj": _wadj,
+                    "wx_note": _wx["desc"],
                     "pick_label": f"{side.title()} {b['point']:g} "
                                   f"({b['price']:+.0f}) @ {b['book']}"
-                                  + (f" \u00b7 {_mph:.0f}mph wind"
-                                     if _wadj else ""),
+                                  + (f" \u00b7 {_wx['short']}"
+                                     if _wx["short"] else ""),
                     "bet_line": float(b["point"]), "model_line": float(raw_total),
                     "edge_pts": float(b["edge"]), "cover_prob": b["cover"],
                     "expected_value": b["ev"], "odds": b["price"],
@@ -2526,8 +2868,9 @@ def build_card(sched, season, week, sign, offers=None):
             raw_total = (rt["total"].get(h, 0.0) + rt["total"].get(a, 0.0)
                          + rt["tbase"] + _it)
             mt = float(g["total_line"])
-            _mph = fetch_wind(h, f"{g.get('gameday','')} {g.get('gametime','')}")
-            _wadj = wind_adjustment(_mph)
+            _wx = game_wx(g)
+            raw_total += _wx["raw_adj"]
+            _mph, _wadj = _wx["wind"], _wx["fair_adj"]
             fair_t = mt + MODEL_WEIGHT * (raw_total - mt) + _wadj
             edge_t = fair_t - mt
             side = "OVER" if edge_t > 0 else "UNDER"
@@ -2538,9 +2881,10 @@ def build_card(sched, season, week, sign, offers=None):
                 "matchup": f"{a} @ {h}", "home_team": h, "away_team": a,
                 "market_type": "TOTAL", "pick_side": side,
                 "wind_mph": _mph, "wind_adj": _wadj,
+                "wx_note": _wx["desc"],
                 "pick_label": f"{side.title()} {mt:g}"
-                              + (f" \u00b7 {_mph:.0f}mph wind"
-                                 if _wadj else ""),
+                              + (f" \u00b7 {_wx['short']}"
+                                 if _wx["short"] else ""),
                 "bet_line": mt, "model_line": float(raw_total),
                 "edge_pts": float(edge_t), "cover_prob": p,
                 "expected_value": ev_from_prob(p, ASSUMED_PRICE),
@@ -3766,8 +4110,16 @@ with tab_game:
             # so a game could be "no bet" here and on the card at the same
             # time.
             _gap = abs(model - mkt)
+            # Model and weather pointing opposite ways (totals only): the big
+            # disagreement is not in the direction of the lean.
+            _conflict = (unit == "total" and (model - mkt) * edge < 0)
             if e is not None and e >= MIN_EV:
                 st.success(f"**Bet {lean}.**")
+            elif _conflict and _gap >= MIN_GAP_PTS:
+                st.info(f"**Don't bet.** The model leans "
+                        f"{'Over' if model > mkt else 'Under'}, but the wind "
+                        f"forecast outweighs it and tips the number to "
+                        f"{lean.split()[0]} \u2014 the two cancel out.")
             elif _gap >= MIN_GAP_PTS:
                 st.warning(f"**Watch {lean}** \u2014 big disagreement, but "
                            f"the edge does not beat the vig.")
@@ -3855,14 +4207,23 @@ with tab_game:
 
         if rt_g["total"] and pd.notna(row.get("total_line")):
             th = rt_g["total"].get(h, 0.0); ta = rt_g["total"].get(a, 0.0)
-            raw_t = th + ta + rt_g["tbase"] + _it_g
+            _wx_g = game_wx(row)
+            raw_t = th + ta + rt_g["tbase"] + _it_g + _wx_g["raw_adj"]
             mt = float(row["total_line"])
-            _mph_g = fetch_wind(h, f"{row.get('gameday','')} {row.get('gametime','')}")
-            _wadj_g = wind_adjustment(_mph_g)
+            _wadj_g = _wx_g["fair_adj"]
             edge_t = MODEL_WEIGHT * (raw_t - mt) + _wadj_g
-            if _wadj_g:
-                st.caption(f"Wind {_mph_g:.0f} mph: {_wadj_g:+.2f} pts on the "
-                           f"total after the forecast haircut.")
+            _wx_bits = []
+            for _f, _pts, _how in _wx_g["parts"]:
+                _wx_bits.append(
+                    f"{WX_LABEL[_f]} {_pts:+.1f}"
+                    + (" (beats the close)" if _how == "close"
+                       else " (in model line)"))
+            st.caption(
+                f"Weather: {_wx_g['desc']}."
+                + (f" Effect on the total: {'; '.join(_wx_bits)}. Effects that "
+                   f"beat the closing line move the number directly; the "
+                   f"rest go into the model line, since the market already "
+                   f"prices them." if _wx_bits else ""))
             lean = f"Over {mt:g}" if edge_t > 0 else f"Under {mt:g}"
             verdict_block("Total", edge_t, norm_cdf(abs(edge_t) / SD_TOTAL),
                           ev_from_prob(norm_cdf(abs(edge_t) / SD_TOTAL)),
@@ -4059,6 +4420,24 @@ with tab_tracker:
                     + ("in use." if qb_model_on() else
                        "did not clear the bar, so the flat QB penalty is used."))
             elif _ia.get("qb_error"):
+                pass
+            _w = _ia.get("weather")
+            if _w:
+                _wp = []
+                for _f in WX_FEATURES:
+                    _mc = (_w.get("market") or {}).get(_f, {})
+                    _vl = (_w.get("value") or {}).get(_f, {})
+                    _use = ("beats the close" if (_mc and np.sign(_mc.get("coef", 0)) == WX_SIGN[_f] and abs(_mc.get("t", 0)) >= WX_MIN_T)
+                            else "in model line" if (_vl and np.sign(_vl.get("coef", 0)) == WX_SIGN[_f] and abs(_vl.get("t", 0)) >= WX_MIN_T)
+                            else "not used")
+                    _wp.append(f"{_f} {_vl.get('coef', 0):+.2f} (t {_vl.get('t', 0):.1f}, {_use})")
+                st.caption(f"Weather, per unit (wind/mph, rain/inch, cold/\u00b0F "
+                           f"below {WX_COLD_BELOW_F:.0f}, snow/inch) on "
+                           f"{_w['n_outdoor']:,} outdoor games: " + "; ".join(_wp) + ".")
+            elif _ia.get("weather_error"):
+                st.caption(f"Weather not measured ({_ia['weather_error'][:120]}); "
+                           f"wind-only rule in use.")
+            if _ia.get("qb_error") and not _ia.get("qb"):
                 st.caption(f"Quarterback ratings not available "
                            f"({_ia['qb_error'][:120]}); the flat QB penalty is "
                            f"used instead.")
