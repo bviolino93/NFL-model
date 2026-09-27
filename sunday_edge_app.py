@@ -1873,7 +1873,7 @@ def _save_injury_adj(d):
         return False
 
 
-@st.cache_data(ttl=INJ_REFRESH_DAYS * 86400, show_spinner=(
+@st.cache_data(ttl=86400, show_spinner=(
     "Measuring what injuries are worth from 13 seasons of history "
     "\u2014 this happens about once a week and takes a few minutes..."))
 def _auto_injury_adjustment(_stamp=0):
@@ -1891,7 +1891,10 @@ def _auto_injury_adjustment(_stamp=0):
                    - datetime.fromisoformat(saved["created_at"])).days
         except Exception:
             age = INJ_REFRESH_DAYS
-        if age < INJ_REFRESH_DAYS:
+        # A copy whose QB ratings failed is retried the next day, not held
+        # for a week: that failure is usually a download hiccup.
+        limit = INJ_REFRESH_DAYS if saved.get("qb") else 1
+        if age < limit:
             return saved
     res = inj_mod.measure(nfl=nfl, log=lambda m: None)
     if not _valid_injury_adj(res):
@@ -3504,6 +3507,17 @@ with tab_slate:
         # that too — a reader should never have to guess whether a pick
         # exists because the model spotted something or because it did not
         # know a starter was out.
+        _iq = load_injury_adjustment() or {}
+        if _iq and not qb_model_on():
+            _why_q = (_iq.get("qb_error") or
+                      ("QB value did not clear the significance bar"
+                       if _iq.get("qb") else "not measured yet"))
+            _h.append(
+                f'<div class="sc-note warn">Individual QB ratings are OFF '
+                f'({_html.escape(str(_why_q)[:140])}). Quarterback changes use '
+                f'a flat penalty that ignores who the replacement is. Retries '
+                f'within a day, or tap Re-measure in Tracker \u2192 Injury '
+                f'model.</div>')
         if qb_model_on():
             # Individual QB ratings: name every change and its price.
             _qbc = []
