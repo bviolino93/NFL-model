@@ -36,6 +36,8 @@ import requests
 
 import nfl_data_py as nfl
 
+import injuries as inj_mod
+
 # Stadium coordinates, and whether the venue is exposed to weather.
 # Retractable roofs are treated as outdoor: the roof is usually open in
 # fair weather and closed in bad, which is conservative here.
@@ -72,6 +74,19 @@ WIND_FORECAST_DISCOUNT = 0.40
 
 # Below this the effect is noise and the market has it priced anyway.
 WIND_MIN_MPH = 8.0
+
+# Injuries (non-QB). Coefficients come from injury_adjustment.json, produced
+# by injuries.py on history; absent that file nothing is applied. A position
+# group's coefficient is used only if it has the sign football predicts AND
+# a t-stat of at least this, so the app never acts on a number that could be
+# noise.
+INJ_MIN_T = 2.0
+# Safety rail, not a measurement: no pile of listed players moves a margin or
+# total by more than this. Roughly a starting quarterback's worth.
+INJ_MAX_PTS = 6.0
+# The measurement re-runs itself this often (it is kept in the Google Sheet
+# between runs, so the few-minute cost is paid about once a week).
+INJ_REFRESH_DAYS = 7
 
 
 # Odds API full names -> nflverse abbreviations.
@@ -171,7 +186,12 @@ MODEL_VERSION_BASE = f"1.2.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT}"
 def model_version():
     """Threshold is part of the version: change the bar and the record it
     produces is no longer comparable with what came before."""
-    return f"{MODEL_VERSION_BASE}-ev{MIN_EV:g}-g{MIN_GAP_PTS:g}"
+    v = f"{MODEL_VERSION_BASE}-ev{MIN_EV:g}-g{MIN_GAP_PTS:g}"
+    # The injury adjustment changes the model line, so bets frozen with it
+    # on are tagged and can be scored separately from those without.
+    if load_injury_adjustment():
+        v += f"-inj{load_injury_adjustment().get('version', 1)}"
+    return v
 
 TRACKER_COLS = [
     "record_key", "frozen_at", "season", "week", "game_id", "kickoff",
@@ -815,6 +835,19 @@ def build_ratings(sched, season, week):
     prior = prior.sort_values(["season", "week"])
     if len(prior) < 40:
         return None
+    # Take out the part of each past result that was down to injuries, so the
+    # ratings measure healthy strength. This week's report is then applied in
+    # full, which makes the adjustment incremental: only what is missing
+    # relative to what the ratings already assume moves the line.
+    fit = prior.tail(WINDOW_GAMES)
+    _om, _ot = injury_history_offsets(fit)
+    prior = prior.copy()
+    # Scores arrive as integers; the adjusted results are not.
+    prior["home_margin"] = prior["home_margin"].astype(float)
+    prior["total_points"] = prior["total_points"].astype(float)
+    prior.loc[fit.index, "home_margin"] = fit["home_margin"] - _om
+    prior.loc[fit.index, "total_points"] = fit["total_points"] - _ot
+    n_inj_adj = int((_om.abs() >= 0.1).sum())
     recent = prior.tail(WINDOW_GAMES)
     in_season = prior[prior["season"] == season]
     teams = sorted(set(g["home_team"]) | set(g["away_team"]))
@@ -848,7 +881,8 @@ def build_ratings(sched, season, week):
     return {"margin": _blend(r_cur, r_all), "hfa": hfa,
             "total": _blend(t_cur, t_all), "tbase": tbase,
             "n_prior": len(prior), "in_season_weight": w,
-            "n_in_season": len(in_season), "prior_ratings": r_all}
+            "n_in_season": len(in_season), "prior_ratings": r_all,
+            "n_injury_adjusted": n_inj_adj}
 
 
 def ev_from_prob(p, odds=-110):
@@ -879,6 +913,189 @@ def qb_delta(season, week, h, a):
     d = (-pen if h_out else 0.0) + (pen if a_out else 0.0)
     who = [t for t, o in ((h, h_out), (a, a_out)) if o]
     return d, (f"backup QB: {', '.join(who)}" if who else None)
+
+
+def _valid_injury_adj(d):
+    try:
+        return (isinstance(d, dict) and isinstance(d.get("margin"), dict)
+                and int(d.get("n_games", 0)) >= 500)
+    except Exception:
+        return False
+
+
+def _injury_ws(create=False):
+    """The 'injury_model' tab in the tracker spreadsheet, where the automatic
+    measurement is kept so it survives the app going to sleep."""
+    ws = _sheet()
+    if ws is None:
+        return None
+    try:
+        return ws.spreadsheet.worksheet("injury_model")
+    except Exception:
+        if not create:
+            return None
+        try:
+            return ws.spreadsheet.add_worksheet("injury_model", rows=5, cols=2)
+        except Exception:
+            return None
+
+
+def _read_saved_injury_adj():
+    ws = _injury_ws()
+    if ws is None:
+        return None
+    try:
+        d = json.loads(ws.acell("A1").value or "")
+    except Exception:
+        return None
+    return d if _valid_injury_adj(d) else None
+
+
+def _save_injury_adj(d):
+    ws = _injury_ws(create=True)
+    if ws is None:
+        return False
+    try:
+        ws.update_acell("A1", json.dumps(d))
+        return True
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=INJ_REFRESH_DAYS * 86400, show_spinner=(
+    "Measuring what injuries are worth from 13 seasons of history "
+    "\u2014 this happens about once a week and takes a few minutes..."))
+def _auto_injury_adjustment(_stamp=0):
+    """
+    Keeps the injury measurement current without anyone running anything.
+
+    Uses the saved copy in the Google Sheet if it is less than
+    INJ_REFRESH_DAYS old; otherwise re-measures from nflverse and saves it.
+    Raises on failure so a failure is never cached as "no adjustment".
+    """
+    saved = _read_saved_injury_adj()
+    if saved:
+        try:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(saved["created_at"])).days
+        except Exception:
+            age = INJ_REFRESH_DAYS
+        if age < INJ_REFRESH_DAYS:
+            return saved
+    res = inj_mod.measure(nfl=nfl, log=lambda m: None)
+    if not _valid_injury_adj(res):
+        raise RuntimeError("measurement came back incomplete")
+    res["saved_to_sheet"] = True
+    if not _save_injury_adj(res):
+        res["saved_to_sheet"] = False
+    return res
+
+
+def load_injury_adjustment():
+    """
+    What non-QB injuries are worth. In order of preference:
+      1. injury_adjustment.json in the repo, if you ever want to pin one;
+      2. the automatic measurement (refreshed weekly, kept in the Sheet).
+    If measuring fails, there is NO adjustment and the app says so; it does
+    not retry on every click, because each attempt takes minutes.
+    """
+    try:
+        with open("injury_adjustment.json") as fh:
+            d = json.load(fh)
+        if _valid_injury_adj(d):
+            d.setdefault("source", "repo file")
+            return d
+    except Exception:
+        pass
+    if st.session_state.get("inj_auto_failed"):
+        return None
+    try:
+        d = _auto_injury_adjustment(st.session_state.get("inj_stamp", 0))
+        d = dict(d)
+        d.setdefault("source", "automatic")
+        return d
+    except Exception as e:
+        st.session_state["inj_auto_failed"] = f"{type(e).__name__}: {e}"
+        return None
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _inj_report(season):
+    return inj_mod.prep_injuries(nfl.import_injuries([int(season)]))
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _inj_snaps(season):
+    """Snap counts for this season and last; last alone if this season's
+    file does not exist yet."""
+    try:
+        return inj_mod.prep_snaps(
+            nfl.import_snap_counts([int(season) - 1, int(season)]))
+    except Exception:
+        return inj_mod.prep_snaps(nfl.import_snap_counts([int(season) - 1]))
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def injury_loads(season, week):
+    """
+    This week's injury load per team and position group. Returns
+    (loads, status) where status explains an empty result, because "no
+    injuries" and "no report published yet" must not look the same.
+    """
+    adj = load_injury_adjustment()
+    if not adj:
+        return {}, "off"
+    try:
+        rep = _inj_report(season)
+    except Exception as e:
+        return {}, f"injury report unavailable ({type(e).__name__})"
+    if rep.empty or not ((rep["week"] == int(week)).any()):
+        return {}, f"no injury report published for week {week} yet"
+    try:
+        sn = _inj_snaps(season)
+    except Exception as e:
+        return {}, f"snap counts unavailable ({type(e).__name__})"
+    loads = inj_mod.team_injury_loads(rep, sn, int(season), int(week),
+                                      adj.get("miss_prob"))
+    return loads, "ok"
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def season_injury_table(season, miss_prob_items):
+    """Injury load for every team-week of a season, for the games the ratings
+    are fit on. Empty (no offset) if the data is not available."""
+    try:
+        return inj_mod.season_loads(_inj_report(season), _inj_snaps(season),
+                                    int(season), dict(miss_prob_items))
+    except Exception:
+        return pd.DataFrame(columns=["season", "week", "team",
+                                     *inj_mod.GROUPS])
+
+
+def injury_history_offsets(games):
+    """(margin_offset, total_offset) for past games; zeros when the
+    adjustment is off."""
+    adj = load_injury_adjustment()
+    z = pd.Series(0.0, index=games.index)
+    if not adj or games.empty:
+        return z, z.copy()
+    mp = tuple(sorted((adj.get("miss_prob") or {}).items()))
+    tables = [season_injury_table(int(s_), mp)
+              for s_ in sorted(pd.to_numeric(games["season"]).unique())]
+    table = pd.concat(tables, ignore_index=True) if tables else None
+    return inj_mod.history_offsets(adj, table, games, min_t=INJ_MIN_T,
+                                   cap=INJ_MAX_PTS)
+
+
+def injury_delta(season, week, h, a):
+    """(margin_delta, total_delta, note, detail) for one game. All zero when
+    the measurement file is absent or the report is not out yet."""
+    adj = load_injury_adjustment()
+    if not adj:
+        return 0.0, 0.0, None, {}
+    loads, _ = injury_loads(season, week)
+    return inj_mod.game_deltas(adj, loads, h, a, min_t=INJ_MIN_T,
+                               cap=INJ_MAX_PTS)
 
 
 def assign_tiers(card):
@@ -912,6 +1129,7 @@ def build_card(sched, season, week, sign, offers=None):
 
     games = sched[(sched["season"] == season) & (sched["week"] == week)].copy()
     rows = []
+    _inj = {}
     for _, g in games.iterrows():
         h, a = g["home_team"], g["away_team"]
         if h not in rt["margin"] or a not in rt["margin"]:
@@ -920,7 +1138,12 @@ def build_card(sched, season, week, sign, offers=None):
         h_out = bool(_qb_stat.get(str(h), {}).get("penalise"))
         a_out = bool(_qb_stat.get(str(a), {}).get("penalise"))
         _qbd = (-_qb_pen if h_out else 0.0) + (_qb_pen if a_out else 0.0)
-        raw_model = (rt["margin"][h] - rt["margin"][a] + rt["hfa"]) + _qbd
+        # Injuries go into the RAW line, like the QB adjustment, so they pass
+        # through the 0.099 blend. Their job is mostly to stop the model
+        # disagreeing with a line that moved on news it cannot see.
+        _im, _it, _inote, _ = injury_delta(season, week, h, a)
+        _inj[g["game_id"]] = (_im, _it, _inote)
+        raw_model = (rt["margin"][h] - rt["margin"][a] + rt["hfa"]) + _qbd + _im
         mkt = sign * g["spread_line"] if pd.notna(g.get("spread_line")) else None
         live = lookup_offers(offers, a, h) if offers else None
 
@@ -977,7 +1200,8 @@ def build_card(sched, season, week, sign, offers=None):
 
         # TOTAL — live books first
         if live and live["totals"] and rt["total"]:
-            raw_total = rt["total"].get(h, 0.0) + rt["total"].get(a, 0.0) + rt["tbase"]
+            raw_total = (rt["total"].get(h, 0.0) + rt["total"].get(a, 0.0)
+                         + rt["tbase"] + _it)
             pts = [p for _, p, _, _ in live["totals"]]
             mt = float(np.median(pts))
             # Wind adjusts the FAIR line directly rather than going through
@@ -1012,7 +1236,8 @@ def build_card(sched, season, week, sign, offers=None):
 
         # TOTAL fallback
         if rt["total"] and pd.notna(g.get("total_line")):
-            raw_total = rt["total"].get(h, 0.0) + rt["total"].get(a, 0.0) + rt["tbase"]
+            raw_total = (rt["total"].get(h, 0.0) + rt["total"].get(a, 0.0)
+                         + rt["tbase"] + _it)
             mt = float(g["total_line"])
             _mph = fetch_wind(h, f"{g.get('gameday','')} {g.get('gametime','')}")
             _wadj = wind_adjustment(_mph)
@@ -1038,6 +1263,12 @@ def build_card(sched, season, week, sign, offers=None):
     card = pd.DataFrame(rows)
     if card.empty:
         return card, rt
+    # What the injury adjustment did to each row's model line, for display.
+    card["inj_adj"] = [(_inj.get(gid, (0.0, 0.0, None))[0] if m == "SPREAD"
+                        else _inj.get(gid, (0.0, 0.0, None))[1])
+                       for gid, m in zip(card["game_id"], card["market_type"])]
+    card["inj_note"] = [_inj.get(gid, (0.0, 0.0, None))[2]
+                        for gid in card["game_id"]]
     card["abs_edge"] = card["edge_pts"].abs()
     card = card.sort_values("abs_edge", ascending=False).reset_index(drop=True)
     # Tiers are FILTERS, not quotas. If nothing clears the floor the
@@ -1327,7 +1558,8 @@ def ml_flags(sched, season, week, rt, sign, offers):
         if not live:
             continue
         raw = (rt["margin"][h] - rt["margin"][a] + rt["hfa"]
-               + qb_delta(season, week, h, a)[0])
+               + qb_delta(season, week, h, a)[0]
+               + injury_delta(season, week, h, a)[0])
         p_home = norm_cdf(raw / SD_MARGIN)
         for team, prob in ((h, p_home), (a, 1.0 - p_home)):
             price = None
@@ -1796,6 +2028,17 @@ def render_row(r, badge):
         fl, fm = f"{shown_line:g}", f"{shown_model:.1f}"
     gap = abs(shown_model - shown_line)
     kick = str(r.get("kickoff", "")).strip()
+    try:
+        _ia = float(r.get("inj_adj") or 0.0)
+    except Exception:
+        _ia = 0.0
+    _in = r.get("inj_note")
+    _inj_html = ""
+    if abs(_ia) >= 0.05 and isinstance(_in, str) and _in:
+        # Same sign convention as the Model number on this row.
+        _shown_ia = -_ia if (lab == "Line" and side == "HOME") else _ia
+        _inj_html = (f"<br>Injuries moved the model line <b>{_shown_ia:+.1f}</b>"
+                     f" ({e(_in)}).")
     st.markdown(f"""
 <div class="se-row">
   <span class="se-tag {cls}">{e(badge)}</span>
@@ -1812,7 +2055,7 @@ def render_row(r, badge):
   <div class="se-note">Model is <b>{gap:.1f}</b> points off the market.
     Weighted at {MODEL_WEIGHT}, that becomes <b>{abs(edge):.2f}</b> points of
     edge &mdash; the weight this model earned against
-    {BACKTEST_N:,} past games.</div>
+    {BACKTEST_N:,} past games.{_inj_html}</div>
 </div>""", unsafe_allow_html=True)
 
 
@@ -2045,10 +2288,39 @@ with tab_slate:
                     'this week.</div>')
         else:
             _h.append(
-                '<div class="sc-note warn">No injury adjustment applied \u2014 '
-                'the model does not know who is playing. A pick can exist '
-                'purely because a starter is out and the line moved without '
-                'it. Run the QB measurement to enable.</div>')
+                '<div class="sc-note warn">No quarterback adjustment applied '
+                '\u2014 the model does not know who is starting. A pick can '
+                'exist purely because a starter is out and the line moved '
+                'without it. Run the QB measurement to enable.</div>')
+
+        # Same for everyone else on the injury report.
+        _iadj = load_injury_adjustment()
+        if not _iadj:
+            _why = st.session_state.get("inj_auto_failed") or "not measured"
+            _h.append(
+                f'<div class="sc-note warn">No injury adjustment for non-QB '
+                f'players \u2014 the automatic measurement did not complete '
+                f'({_html.escape(str(_why)[:120])}). It will retry next '
+                f'session.</div>')
+        else:
+            _il, _ist = injury_loads(season, week)
+            if _ist != "ok":
+                _h.append(
+                    f'<div class="sc-note warn">Injury adjustment is on, but '
+                    f'{_html.escape(_ist)} \u2014 these picks do not reflect '
+                    f'this week\'s injuries. Rebuild once Friday\'s report is '
+                    f'out.</div>')
+            else:
+                _ib = card[card["inj_adj"].abs() >= 0.3] if (
+                    not card.empty and "inj_adj" in card.columns) else card
+                _ng = _ib["matchup"].nunique() if len(_ib) else 0
+                _used = [inj_mod.GROUP_LABEL[g] for g in inj_mod.GROUPS
+                         if inj_mod.usable(_iadj, "margin", g, -1, INJ_MIN_T)]
+                _h.append(
+                    f'<div class="sc-note">Injury report applied '
+                    f'({_html.escape(", ".join(_used)) or "no position group cleared the bar"}'
+                    f'). Moved the model line 0.3+ pts in {_ng} game(s). '
+                    f'Sunday inactives can still change things.</div>')
 
         def _blk(title, items):
             if not items:
@@ -2132,7 +2404,8 @@ with tab_game:
         rh, ra = rt_g["margin"].get(h, 0.0), rt_g["margin"].get(a, 0.0)
         hfa = rt_g["hfa"]
         _qbd_g, _qb_note_g = qb_delta(g_season, g_week, h, a)
-        raw = rh - ra + hfa + _qbd_g
+        _im_g, _it_g, _in_g, _idet_g = injury_delta(g_season, g_week, h, a)
+        raw = rh - ra + hfa + _qbd_g + _im_g
 
         def _say(v, unit):
             """A margin as plain English, so there is no sign to misread."""
@@ -2203,7 +2476,23 @@ with tab_game:
             f"this season ({rt_g['in_season_weight']:.0%} weight)."
             + (f" Adjusted for {_qb_note_g} ({_qbd_g:+.1f})." if _qb_note_g
                else "")
+            + (f" Injuries this week ({_in_g}): {_im_g:+.1f} to the home "
+               f"margin, {_it_g:+.1f} to the total." if _in_g else "")
+            + (f" Ratings fit net of injuries in "
+               f"{rt_g.get('n_injury_adjusted', 0)} past games."
+               if rt_g.get("n_injury_adjusted") else "")
         )
+        if _idet_g:
+            with st.expander("Injury report used"):
+                for _t, _side in ((a, "away"), (h, "home")):
+                    _pl = _idet_g.get(_side, {}).get("players", [])
+                    if not _pl:
+                        st.caption(f"{_t}: nobody of note listed.")
+                        continue
+                    st.caption(f"{_t}: " + "; ".join(
+                        f"{p['player']} ({inj_mod.GROUP_LABEL[p['group']]}, "
+                        f"{p['status']}, {p['share']:.0%} of snaps)"
+                        for p in _pl))
 
         if pd.notna(row.get("spread_line")):
             mkt = sign * float(row["spread_line"])
@@ -2220,7 +2509,7 @@ with tab_game:
 
         if rt_g["total"] and pd.notna(row.get("total_line")):
             th = rt_g["total"].get(h, 0.0); ta = rt_g["total"].get(a, 0.0)
-            raw_t = th + ta + rt_g["tbase"]
+            raw_t = th + ta + rt_g["tbase"] + _it_g
             mt = float(row["total_line"])
             _mph_g = fetch_wind(h, f"{row.get('gameday','')} {row.get('gametime','')}")
             _wadj_g = wind_adjustment(_mph_g)
@@ -2386,6 +2675,63 @@ with tab_tracker:
         st.download_button("Download tracker CSV",
                            tr.to_csv(index=False).encode(),
                            "sunday_edge_tracker.csv", "text/csv")
+
+    # Injury model: what is in effect, and (owner only) a way to measure it.
+    with st.expander("Injury model", expanded=False):
+        _ia = load_injury_adjustment()
+        if _ia:
+            st.caption(
+                f"Measured on {_ia.get('n_games', 0):,} games "
+                f"({_ia['seasons'][0]}\u2013{_ia['seasons'][1]}), "
+                f"created {str(_ia.get('created_at', ''))[:10]}. A group is "
+                f"used only with the expected sign and |t| \u2265 {INJ_MIN_T:g}.")
+            _mc = _ia.get("market_check", {}).get("margin", {})
+            _tbl = []
+            for _gname in inj_mod.GROUPS:
+                _c = _ia["margin"].get(_gname, {})
+                _tbl.append({
+                    "Group": inj_mod.GROUP_LABEL[_gname],
+                    "Pts per starter out": _c.get("coef"),
+                    "t": _c.get("t"),
+                    "Used": bool(inj_mod.usable(_ia, "margin", _gname, -1,
+                                                INJ_MIN_T)),
+                    "vs closing line (t)": _mc.get(_gname, {}).get("t"),
+                })
+            st.dataframe(pd.DataFrame(_tbl), hide_index=True,
+                         use_container_width=True)
+            _mp = _ia.get("miss_prob", {})
+            st.caption("How often each status actually sat: " + ", ".join(
+                f"{k} {v:.0%}" for k, v in _mp.items()))
+            st.caption("'vs closing line' near zero means the market already "
+                       "prices these injuries: the adjustment then removes "
+                       "false edges rather than creating real ones.")
+        else:
+            st.caption("Not measured \u2014 no injury adjustment is being "
+                       "applied. "
+                       + str(st.session_state.get("inj_auto_failed") or ""))
+        if _ia:
+            if _ia.get("source") == "repo file":
+                st.caption("Source: injury_adjustment.json in the repo "
+                           "(pinned). Delete that file to go automatic.")
+            else:
+                st.caption(
+                    f"Automatic \u2014 refreshes itself every "
+                    f"{INJ_REFRESH_DAYS} days"
+                    + (", saved in your Google Sheet." if _ia.get("saved_to_sheet")
+                       else " (not saved to the Sheet, so it re-measures "
+                            "whenever the app wakes up)."))
+        if is_owner() and st.button("Re-measure now", key="inj_remeasure"):
+            # Stale the saved copy so the next load really re-measures.
+            _ws_i = _injury_ws()
+            if _ws_i is not None:
+                try:
+                    _ws_i.update_acell("A1", "")
+                except Exception:
+                    pass
+            st.session_state["inj_stamp"] = \
+                st.session_state.get("inj_stamp", 0) + 1
+            st.session_state.pop("inj_auto_failed", None)
+            st.rerun()
 
 st.divider()
 st.markdown(
