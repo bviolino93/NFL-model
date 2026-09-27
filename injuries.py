@@ -18,8 +18,11 @@ adjustments: nothing is applied until it has been MEASURED.
    since 2013, and whether the market already prices it. Writes
    injury_adjustment.json. Absent that file the app applies nothing.
 
-Quarterbacks are excluded here on purpose. The QB module already handles
-them, and counting them twice would double the adjustment.
+Quarterbacks are included as their own group, so a starter listed Out is
+priced automatically. If the app's separate QB module is switched on
+(qb_adjustment.json present), the QB group here is skipped so the same
+absence is never charged twice. A benching (healthy starter demoted) is not
+on the injury report; only the QB module's depth-chart check catches that.
 
 Known blind spots, stated rather than hidden:
   * Players on injured reserve are not on the weekly report, so a season-
@@ -39,16 +42,18 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-# Position groups. Specialists and quarterbacks are deliberately absent.
+# Position groups. Specialists are deliberately absent.
 GROUPS = {
+    "QB":    {"QB"},
     "OL":    {"T", "OT", "G", "OG", "C", "OL", "LT", "RT", "LG", "RG"},
     "SKILL": {"WR", "TE", "RB", "FB", "HB"},
     "FRONT": {"DE", "DT", "NT", "DL", "LB", "ILB", "OLB", "MLB", "EDGE"},
     "DB":    {"CB", "S", "FS", "SS", "DB", "SAF"},
 }
-OFFENSE = ("OL", "SKILL")
+OFFENSE = ("OL", "SKILL")          # non-QB offense, one totals term
+OFF_SIDE = ("QB", "OL", "SKILL")   # whose snap share is offensive snaps
 DEFENSE = ("FRONT", "DB")
-GROUP_LABEL = {"OL": "offensive line", "SKILL": "WR/TE/RB",
+GROUP_LABEL = {"QB": "quarterback", "OL": "offensive line", "SKILL": "WR/TE/RB",
                "FRONT": "front seven", "DB": "secondary"}
 
 # Chance each status means the player sits. Used ONLY until measure() has run;
@@ -127,7 +132,7 @@ def prep_snaps(sn):
     if dfn.max() > 1.5:
         dfn = dfn / 100.0
     grp = d["position"].map(group_of)
-    share = np.where(grp.isin(OFFENSE), off, dfn)
+    share = np.where(grp.isin(OFF_SIDE), off, dfn)
     out = pd.DataFrame({
         "season": pd.to_numeric(d["season"], errors="coerce"),
         "week": pd.to_numeric(d["week"], errors="coerce"),
@@ -244,7 +249,7 @@ def _last(name):
     return toks[-1] if toks else str(name)
 
 
-def history_offsets(adj, table, games, min_t=2.0, cap=6.0):
+def history_offsets(adj, table, games, min_t=2.0, cap=10.0, skip_qb=False):
     """
     For past games: how many points of each result were down to injuries.
 
@@ -279,17 +284,20 @@ def history_offsets(adj, table, games, min_t=2.0, cap=6.0):
         for c in GROUPS:
             g[f"{side}_{c}"] = pd.to_numeric(g[f"{side}_{c}"],
                                              errors="coerce").fillna(0.0)
+    grps = [c for c in GROUPS if not (skip_qb and c == "QB")]
     dm = sum(usable(adj, "margin", c, -1, min_t)
-             * (g[f"home_{c}"] - g[f"away_{c}"]) for c in GROUPS)
+             * (g[f"home_{c}"] - g[f"away_{c}"]) for c in grps)
     off = sum(g[f"home_{c}"] + g[f"away_{c}"] for c in OFFENSE)
     dfn = sum(g[f"home_{c}"] + g[f"away_{c}"] for c in DEFENSE)
     dt = (usable(adj, "total", "OFF", -1, min_t) * off
           + usable(adj, "total", "DEF", +1, min_t) * dfn)
+    if not skip_qb:
+        dt = dt + usable(adj, "total", "QB", -1, min_t) * (g["home_QB"] + g["away_QB"])
     return (pd.Series(np.clip(dm, -cap, cap), index=games.index),
             pd.Series(np.clip(dt, -cap, cap), index=games.index))
 
 
-def game_deltas(adj, loads, home, away, min_t=2.0, cap=6.0):
+def game_deltas(adj, loads, home, away, min_t=2.0, cap=10.0, skip_qb=False):
     """
     Points added to the home margin and to the total, plus a short note.
     Returns (margin_delta, total_delta, note, detail).
@@ -302,6 +310,8 @@ def game_deltas(adj, loads, home, away, min_t=2.0, cap=6.0):
 
     dm = 0.0
     for g in GROUPS:
+        if skip_qb and g == "QB":
+            continue
         coef = usable(adj, "margin", g, -1, min_t)
         dm += coef * (lh.get(g, 0.0) - la.get(g, 0.0))
 
@@ -309,15 +319,19 @@ def game_deltas(adj, loads, home, away, min_t=2.0, cap=6.0):
     dfn = sum(lh.get(g, 0.0) + la.get(g, 0.0) for g in DEFENSE)
     dt = (usable(adj, "total", "OFF", -1, min_t) * off
           + usable(adj, "total", "DEF", +1, min_t) * dfn)
+    if not skip_qb:
+        dt += usable(adj, "total", "QB", -1, min_t) * (
+            lh.get("QB", 0.0) + la.get("QB", 0.0))
 
-    # Safety rail, not a measurement: a pile of listed players on one side
-    # should never move the number more than a starting quarterback does.
+    # Safety rail, not a measurement.
     dm = float(np.clip(dm, -cap, cap))
     dt = float(np.clip(dt, -cap, cap))
 
     parts = []
     for team, l in ((away, la), (home, lh)):
-        names = [_last(p["player"]) for p in l.get("players", [])[:3]]
+        names = [_last(p["player"]) + (" (QB)" if p["group"] == "QB" else "")
+                 for p in l.get("players", [])[:3]
+                 if not (skip_qb and p["group"] == "QB")]
         if names:
             parts.append(f"{team}: {', '.join(names)}")
     note = "; ".join(parts) if parts and (abs(dm) >= 0.1 or abs(dt) >= 0.1) else None
@@ -452,18 +466,20 @@ def measure(seasons=None, nfl=None, log=print):
     # Value to the rating.
     Xm = np.hstack([diff, ones, D_m])
     bm, sem, sdm = _fit(Xm, g["margin"].values.astype(float), len(grp) + 1)
-    Xt = np.hstack([off[:, None], dfn[:, None], ones, D_t])
-    bt, set_, sdt = _fit(Xt, g["total"].values.astype(float), 3)
+    qb = (g["home_QB"] + g["away_QB"]).values
+    Xt = np.hstack([off[:, None], dfn[:, None], qb[:, None], ones, D_t])
+    bt, set_, sdt = _fit(Xt, g["total"].values.astype(float), 4)
 
     out = {
-        "version": 1,
+        "version": 2,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "seasons": [seasons[0], seasons[-1]],
         "n_games": n,
         "miss_prob": miss_prob,
         "status_n": status_n,
         "margin": {c: _stat(bm[i], sem[i]) for i, c in enumerate(grp)},
-        "total": {"OFF": _stat(bt[0], set_[0]), "DEF": _stat(bt[1], set_[1])},
+        "total": {"OFF": _stat(bt[0], set_[0]), "DEF": _stat(bt[1], set_[1]),
+                  "QB": _stat(bt[2], set_[2])},
         "resid_sd": {"margin": round(sdm, 2), "total": round(sdt, 2)},
     }
 
@@ -484,8 +500,10 @@ def measure(seasons=None, nfl=None, log=print):
             err = (d["total"] - d["total_line"]).values.astype(float)
             o = sum(d[f"home_{c}"] + d[f"away_{c}"] for c in OFFENSE).values
             f = sum(d[f"home_{c}"] + d[f"away_{c}"] for c in DEFENSE).values
-            b, se = _ols(np.column_stack([o, f, np.ones(len(d))]), err)
-            mc["total"] = {"OFF": _stat(b[0], se[0]), "DEF": _stat(b[1], se[1])}
+            q = (d["home_QB"] + d["away_QB"]).values
+            b, se = _ols(np.column_stack([o, f, q, np.ones(len(d))]), err)
+            mc["total"] = {"OFF": _stat(b[0], se[0]), "DEF": _stat(b[1], se[1]),
+                           "QB": _stat(b[2], se[2])}
     out["market_check"] = mc
     log(json.dumps(out, indent=2))
     return out

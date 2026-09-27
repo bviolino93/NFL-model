@@ -81,9 +81,9 @@ WIND_MIN_MPH = 8.0
 # a t-stat of at least this, so the app never acts on a number that could be
 # noise.
 INJ_MIN_T = 2.0
-# Safety rail, not a measurement: no pile of listed players moves a margin or
-# total by more than this. Roughly a starting quarterback's worth.
-INJ_MAX_PTS = 6.0
+# Safety rail, not a measurement: no pile of listed players (quarterback
+# included) moves a margin or total by more than this.
+INJ_MAX_PTS = 10.0
 # The measurement re-runs itself this often (it is kept in the Google Sheet
 # between runs, so the few-minute cost is paid about once a week).
 INJ_REFRESH_DAYS = 7
@@ -917,7 +917,9 @@ def qb_delta(season, week, h, a):
 
 def _valid_injury_adj(d):
     try:
+        # Version 2 added quarterbacks; an older saved copy is re-measured.
         return (isinstance(d, dict) and isinstance(d.get("margin"), dict)
+                and "QB" in d["margin"] and int(d.get("version", 1)) >= 2
                 and int(d.get("n_games", 0)) >= 500)
     except Exception:
         return False
@@ -1084,7 +1086,8 @@ def injury_history_offsets(games):
               for s_ in sorted(pd.to_numeric(games["season"]).unique())]
     table = pd.concat(tables, ignore_index=True) if tables else None
     return inj_mod.history_offsets(adj, table, games, min_t=INJ_MIN_T,
-                                   cap=INJ_MAX_PTS)
+                                   cap=INJ_MAX_PTS,
+                                   skip_qb=bool(load_qb_adjustment()))
 
 
 def injury_delta(season, week, h, a):
@@ -1095,7 +1098,8 @@ def injury_delta(season, week, h, a):
         return 0.0, 0.0, None, {}
     loads, _ = injury_loads(season, week)
     return inj_mod.game_deltas(adj, loads, h, a, min_t=INJ_MIN_T,
-                               cap=INJ_MAX_PTS)
+                               cap=INJ_MAX_PTS,
+                               skip_qb=bool(load_qb_adjustment()))
 
 
 def assign_tiers(card):
@@ -2287,11 +2291,18 @@ with tab_slate:
                     '<div class="sc-note">No quarterback changes detected '
                     'this week.</div>')
         else:
-            _h.append(
-                '<div class="sc-note warn">No quarterback adjustment applied '
-                '\u2014 the model does not know who is starting. A pick can '
-                'exist purely because a starter is out and the line moved '
-                'without it. Run the QB measurement to enable.</div>')
+            if load_injury_adjustment():
+                _h.append(
+                    '<div class="sc-note">Quarterbacks on the injury report '
+                    'are adjusted through the injury model below. A benched '
+                    '(healthy) starter is not on that report and is NOT '
+                    'adjusted for \u2014 check QB news before betting.</div>')
+            else:
+                _h.append(
+                    '<div class="sc-note warn">No quarterback adjustment '
+                    'applied \u2014 the model does not know who is starting. '
+                    'A pick can exist purely because a starter is out and the '
+                    'line moved without it.</div>')
 
         # Same for everyone else on the injury report.
         _iadj = load_injury_adjustment()
@@ -2315,7 +2326,8 @@ with tab_slate:
                     not card.empty and "inj_adj" in card.columns) else card
                 _ng = _ib["matchup"].nunique() if len(_ib) else 0
                 _used = [inj_mod.GROUP_LABEL[g] for g in inj_mod.GROUPS
-                         if inj_mod.usable(_iadj, "margin", g, -1, INJ_MIN_T)]
+                         if inj_mod.usable(_iadj, "margin", g, -1, INJ_MIN_T)
+                         and not (g == "QB" and load_qb_adjustment())]
                 _h.append(
                     f'<div class="sc-note">Injury report applied '
                     f'({_html.escape(", ".join(_used)) or "no position group cleared the bar"}'
