@@ -475,7 +475,8 @@ def measure(seasons=None, nfl=None, log=print):
     log("Loading weekly rosters (injured reserve)...")
     try:
         inj = combine_reports(
-            inj, prep_reserve(nfl.import_weekly_rosters(seasons)))
+            inj, pd.concat([prep_reserve(nfl.import_weekly_rosters([int(s_)]))
+                            for s_ in seasons], ignore_index=True))
     except Exception as e:
         log(f"Weekly rosters unavailable ({e}); report only.")
     log("Loading snap counts...")
@@ -819,7 +820,10 @@ def measure_qb(nfl, sched, seasons, log=print):
     seasons = [int(s) for s in seasons]
     pbp_seasons = list(range(min(seasons) - 3, max(seasons) + 1))
     log("Loading play-by-play for QB ratings...")
-    db = prep_pbp(load_pbp(nfl, pbp_seasons))
+    # One season at a time, trimmed to dropbacks before the next loads, so
+    # the full play-by-play never sits in memory at once.
+    db = pd.concat([prep_pbp(load_pbp(nfl, [s_])) for s_ in pbp_seasons],
+                   ignore_index=True)
     if db.empty:
         raise RuntimeError("no play-by-play")
     try:
@@ -2158,7 +2162,18 @@ def _injury_ws(create=False):
             return None
 
 
-def _read_saved_injury_adj():
+def _usable_injury_adj(d):
+    """Looser than _valid_injury_adj: good enough to use while a fresh
+    measurement runs (an older version still beats no adjustment)."""
+    try:
+        return (isinstance(d, dict) and isinstance(d.get("margin"), dict)
+                and int(d.get("n_games", 0)) >= 500)
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _read_saved_raw(_stamp=0):
     ws = _injury_ws()
     if ws is None:
         return None
@@ -2166,6 +2181,11 @@ def _read_saved_injury_adj():
         d = json.loads(ws.acell("A1").value or "")
     except Exception:
         return None
+    return d if _usable_injury_adj(d) else None
+
+
+def _read_saved_injury_adj():
+    d = _read_saved_raw()
     return d if _valid_injury_adj(d) else None
 
 
@@ -2180,46 +2200,64 @@ def _save_injury_adj(d):
         return False
 
 
-@st.cache_data(ttl=86400, show_spinner=(
-    "Measuring what injuries are worth from 13 seasons of history "
-    "\u2014 this happens about once a week and takes a few minutes..."))
-def _auto_injury_adjustment(_stamp=0):
-    """
-    Keeps the injury measurement current without anyone running anything.
+@st.cache_resource(show_spinner=False)
+def _measure_job():
+    """One shared background measurement per server, so the app never waits
+    on it and two visitors never start it twice."""
+    return {"thread": None, "result": None, "error": None, "started": None,
+            "finished": None, "step": ""}
 
-    Uses the saved copy in the Google Sheet if it is less than
-    INJ_REFRESH_DAYS old; otherwise re-measures from nflverse and saves it.
-    Raises on failure so a failure is never cached as "no adjustment".
-    """
-    saved = _read_saved_injury_adj()
-    if saved:
+
+def _job_running():
+    t = _measure_job()["thread"]
+    return bool(t is not None and t.is_alive())
+
+
+def start_measurement():
+    """Run the full measurement (injuries, QB ratings, weather) in the
+    background and save it to the Sheet when done."""
+    import threading
+    job = _measure_job()
+    if _job_running():
+        return
+    def _run():
         try:
-            age = (datetime.now(timezone.utc)
-                   - datetime.fromisoformat(saved["created_at"])).days
-        except Exception:
-            age = INJ_REFRESH_DAYS
-        # A copy whose QB ratings failed is retried the next day, not held
-        # for a week: that failure is usually a download hiccup.
-        limit = (INJ_REFRESH_DAYS if (saved.get("qb") and saved.get("weather"))
-                 else 1)
-        if age < limit:
-            return saved
-    res = inj_mod.measure(nfl=nfl, log=lambda m: None)
-    if not _valid_injury_adj(res):
-        raise RuntimeError("measurement came back incomplete")
-    res["saved_to_sheet"] = True
-    if not _save_injury_adj(res):
-        res["saved_to_sheet"] = False
-    return res
+            res = inj_mod.measure(
+                nfl=nfl, log=lambda m: job.__setitem__("step", str(m)[:160]))
+            if not _valid_injury_adj(res):
+                raise RuntimeError("measurement came back incomplete")
+            res["saved_to_sheet"] = True
+            if not _save_injury_adj(res):
+                res["saved_to_sheet"] = False
+            job["result"], job["error"] = res, None
+        except Exception as e:
+            job["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            job["finished"] = datetime.now(timezone.utc)
+    job.update(started=datetime.now(timezone.utc), finished=None, error=None,
+               step="starting")
+    t = threading.Thread(target=_run, daemon=True)
+    job["thread"] = t
+    t.start()
+
+
+def _age_days(d):
+    try:
+        return (datetime.now(timezone.utc)
+                - datetime.fromisoformat(d["created_at"])).days
+    except Exception:
+        return 999
 
 
 def load_injury_adjustment():
     """
-    What non-QB injuries are worth. In order of preference:
+    What injuries, quarterbacks and weather are worth. In order:
       1. injury_adjustment.json in the repo, if you ever want to pin one;
-      2. the automatic measurement (refreshed weekly, kept in the Sheet).
-    If measuring fails, there is NO adjustment and the app says so; it does
-    not retry on every click, because each attempt takes minutes.
+      2. a measurement just finished on this server;
+      3. the copy saved in the Google Sheet.
+    If there is no current measurement, one starts in the BACKGROUND and the
+    app keeps working with the newest saved copy (or none) until it lands.
+    Nothing here ever makes a visitor wait.
     """
     try:
         with open("injury_adjustment.json") as fh:
@@ -2229,16 +2267,34 @@ def load_injury_adjustment():
             return d
     except Exception:
         pass
-    if st.session_state.get("inj_auto_failed"):
-        return None
-    try:
-        d = _auto_injury_adjustment(st.session_state.get("inj_stamp", 0))
-        d = dict(d)
+    job = _measure_job()
+    if job["result"] and _valid_injury_adj(job["result"]):
+        d = dict(job["result"])
         d.setdefault("source", "automatic")
         return d
-    except Exception as e:
-        st.session_state["inj_auto_failed"] = f"{type(e).__name__}: {e}"
-        return None
+    saved = _read_saved_raw()
+    fresh = bool(saved and _valid_injury_adj(saved) and _age_days(saved) < (
+        INJ_REFRESH_DAYS if (saved.get("qb") and saved.get("weather")) else 1))
+    if not fresh and not _job_running():
+        # Do not hammer a failing measurement: one try per hour.
+        last = job.get("finished")
+        if not (job.get("error") and last and
+                (datetime.now(timezone.utc) - last).total_seconds() < 3600):
+            start_measurement()
+    if saved:
+        d = dict(saved)
+        d.setdefault("source", "automatic" if fresh else "previous (updating)")
+        return d
+    return None
+
+
+def measurement_status():
+    """(running, minutes, step, error) for the on-screen note."""
+    job = _measure_job()
+    mins = None
+    if job.get("started"):
+        mins = (datetime.now(timezone.utc) - job["started"]).total_seconds() / 60
+    return _job_running(), mins, job.get("step", ""), job.get("error")
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -3888,6 +3944,16 @@ with tab_slate:
         # that too — a reader should never have to guess whether a pick
         # exists because the model spotted something or because it did not
         # know a starter was out.
+        _mr, _mm, _ms, _me = measurement_status()
+        if _mr:
+            _base = load_injury_adjustment()
+            _h.append(
+                f'<div class="sc-note warn">Updating the injury, QB and weather '
+                f'measurement in the background ({_mm:.0f} min so far). This '
+                f'card uses '
+                + ("the previous measurement" if _base else
+                   "NO injury, QB or weather adjustments")
+                + ' until it finishes \u2014 rebuild in a few minutes.</div>')
         _iq = load_injury_adjustment() or {}
         if _iq and not qb_model_on():
             _why_q = (_iq.get("qb_error") or
@@ -3977,7 +4043,7 @@ with tab_slate:
         # Same for everyone else on the injury report.
         _iadj = load_injury_adjustment()
         if not _iadj:
-            _why = st.session_state.get("inj_auto_failed") or "not measured"
+            _why = measurement_status()[3] or "measurement in progress"
             _h.append(
                 f'<div class="sc-note warn">No injury adjustment for non-QB '
                 f'players \u2014 the automatic measurement did not complete '
@@ -4447,7 +4513,7 @@ with tab_tracker:
         else:
             st.caption("Not measured \u2014 no injury adjustment is being "
                        "applied. "
-                       + str(st.session_state.get("inj_auto_failed") or ""))
+                       + str(measurement_status()[3] or ""))
         if _ia:
             if _ia.get("source") == "repo file":
                 st.caption("Source: injury_adjustment.json in the repo "
@@ -4459,17 +4525,15 @@ with tab_tracker:
                     + (", saved in your Google Sheet." if _ia.get("saved_to_sheet")
                        else " (not saved to the Sheet, so it re-measures "
                             "whenever the app wakes up)."))
-        if is_owner() and st.button("Re-measure now", key="inj_remeasure"):
-            # Stale the saved copy so the next load really re-measures.
-            _ws_i = _injury_ws()
-            if _ws_i is not None:
-                try:
-                    _ws_i.update_acell("A1", "")
-                except Exception:
-                    pass
-            st.session_state["inj_stamp"] = \
-                st.session_state.get("inj_stamp", 0) + 1
-            st.session_state.pop("inj_auto_failed", None)
+        _run, _mins, _step, _err = measurement_status()
+        if _run:
+            st.caption(f"Measuring in the background ({_mins:.0f} min so far): "
+                       f"{_step}")
+        elif _err:
+            st.caption(f"Last measurement failed: {_err[:160]}")
+        if is_owner() and not _run and st.button("Re-measure now",
+                                                 key="inj_remeasure"):
+            start_measurement()
             st.rerun()
 
 st.divider()
