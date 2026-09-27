@@ -270,6 +270,11 @@ def history_offsets(adj, table, games, min_t=2.0, cap=10.0, skip_qb=False):
     if not adj or table is None or len(table) == 0 or len(games) == 0:
         return z, z.copy()
     L = table.copy()
+    # A table cached by an older version may lack a group (e.g. QB). Treat
+    # a missing group as no injuries rather than crashing.
+    for c in GROUPS:
+        if c not in L.columns:
+            L[c] = 0.0
     L["team"] = L["team"].map(canon)
     key = ["season", "week"]
     g = games[key].copy()
@@ -511,6 +516,10 @@ def measure(seasons=None, nfl=None, log=print):
     out["market_check"] = mc
     log(json.dumps(out, indent=2))
     return out
+
+# Part of every injury cache key: when the position groups change, anything
+# Streamlit cached under the old groups is ignored instead of reused.
+INJ_SCHEMA = "v2:" + ",".join(GROUPS)
 
 inj_mod = types.SimpleNamespace(
     GROUPS=GROUPS, GROUP_LABEL=GROUP_LABEL, usable=usable,
@@ -1520,7 +1529,7 @@ def _inj_snaps(season):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def injury_loads(season, week):
+def injury_loads(season, week, schema=None):
     """
     This week's injury load per team and position group. Returns
     (loads, status) where status explains an empty result, because "no
@@ -1545,7 +1554,7 @@ def injury_loads(season, week):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def season_injury_table(season, miss_prob_items):
+def season_injury_table(season, miss_prob_items, schema=None):
     """Injury load for every team-week of a season, for the games the ratings
     are fit on. Empty (no offset) if the data is not available."""
     try:
@@ -1564,7 +1573,7 @@ def injury_history_offsets(games):
     if not adj or games.empty:
         return z, z.copy()
     mp = tuple(sorted((adj.get("miss_prob") or {}).items()))
-    tables = [season_injury_table(int(s_), mp)
+    tables = [season_injury_table(int(s_), mp, INJ_SCHEMA)
               for s_ in sorted(pd.to_numeric(games["season"]).unique())]
     table = pd.concat(tables, ignore_index=True) if tables else None
     return inj_mod.history_offsets(adj, table, games, min_t=INJ_MIN_T,
@@ -1578,7 +1587,7 @@ def injury_delta(season, week, h, a):
     adj = load_injury_adjustment()
     if not adj:
         return 0.0, 0.0, None, {}
-    loads, _ = injury_loads(season, week)
+    loads, _ = injury_loads(season, week, INJ_SCHEMA)
     return inj_mod.game_deltas(adj, loads, h, a, min_t=INJ_MIN_T,
                                cap=INJ_MAX_PTS,
                                skip_qb=bool(load_qb_adjustment()))
@@ -2796,7 +2805,7 @@ with tab_slate:
                 f'({_html.escape(str(_why)[:120])}). It will retry next '
                 f'session.</div>')
         else:
-            _il, _ist = injury_loads(season, week)
+            _il, _ist = injury_loads(season, week, INJ_SCHEMA)
             if _ist != "ok":
                 _h.append(
                     f'<div class="sc-note warn">Injury adjustment is on, but '
