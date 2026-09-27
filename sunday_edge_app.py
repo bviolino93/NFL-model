@@ -903,9 +903,20 @@ def measure_qb(nfl, sched, seasons, log=print):
     return out
 
 
+PBP_URL = ("https://github.com/nflverse/nflverse-data/releases/download/"
+           "pbp/play_by_play_{}.parquet")
+
+
 def load_pbp(nfl, seasons):
-    """Only the columns the QB model needs; play-by-play is the heaviest
-    nflverse file and Streamlit's memory is limited."""
+    """
+    Only the columns the QB model needs; play-by-play is the heaviest
+    nflverse file and Streamlit's memory is limited.
+
+    include_participation=False matters: nfl_data_py otherwise also fetches
+    the per-play participation file, which nflverse does not publish until
+    after a season, so the CURRENT season's download failed outright and
+    the ratings silently ran on last year's data.
+    """
     want = ["season", "week", "game_id", "season_type", "posteam", "defteam",
             "qb_dropback", "sack", "pass_attempt", "qb_epa", "cpoe", "wp",
             "passer", "passer_id"]
@@ -919,13 +930,19 @@ def load_pbp(nfl, seasons):
         for cols in (want, alt):
             try:
                 df = nfl.import_pbp_data([int(s_)], columns=cols,
+                                         include_participation=False,
                                          downcast=True, cache=False)
                 break
-            except TypeError:
-                df = nfl.import_pbp_data([int(s_)])
-                break
             except Exception:
-                continue
+                df = None
+        if df is None:
+            # Last resort: read nflverse's file directly.
+            for cols in (want, alt):
+                try:
+                    df = pd.read_parquet(PBP_URL.format(int(s_)), columns=cols)
+                    break
+                except Exception:
+                    df = None
         if df is not None and len(df):
             frames.append(df)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -1033,6 +1050,12 @@ RIDGE_ALPHA   = 8.0
 # filled up with home underdogs. Ratings and home field now sit on the same
 # scale.
 CARRYOVER     = 1.00
+# Games of this season at which the current season takes over completely.
+# Weight = sqrt(games / this): week 2 35%, week 3 50%, week 4 61%, week 5 71%,
+# week 7 87%, full around week 9. Faster than the old linear ramp (full at
+# 160 games), chosen by preference rather than backtest, so it is part of
+# the model version.
+IN_SEASON_FULL_GAMES = 128
 WINDOW_GAMES  = 320
 
 # Residual SDs measured on 4,254 games, 2007-2025. These convert a point
@@ -1086,7 +1109,8 @@ MIN_GAP_PTS = 4.0
 #             riding on bets the app's own math says lose ~2% each.
 
 
-MODEL_VERSION_BASE = f"1.2.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT}"
+MODEL_VERSION_BASE = (f"1.2.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT}"
+                      f"-r{IN_SEASON_FULL_GAMES}")
 
 
 def model_version():
@@ -1626,7 +1650,8 @@ def qb_status(season, week):
 
     # Who has actually been starting, from earlier weeks this season.
     try:
-        pbp = nfl.import_pbp_data([int(season)], downcast=True, cache=False)
+        pbp = nfl.import_pbp_data([int(season)], downcast=True, cache=False,
+                                  include_participation=False)
         pbp = pbp[pd.to_numeric(pbp["week"], errors="coerce") < int(week)]
         pbp = pbp.dropna(subset=["passer_player_id", "posteam"])
         usual = (pbp.groupby(["posteam", "passer_player_id"]).size()
@@ -1773,7 +1798,10 @@ def build_ratings(sched, season, week):
     r_cur, _ = fit_ratings(in_season, teams, "home_margin", min_games=16)
     t_cur, _ = fit_ratings(in_season, teams, "total_points", symmetric=True,
                            min_games=16)
-    w = min(1.0, len(in_season) / 160.0) if r_cur is not None else 0.0
+    # Front-loaded ramp: half weight after two weeks (32 games), full weight
+    # at IN_SEASON_FULL_GAMES. Was linear to 160 games (20% at week 3).
+    w = (min(1.0, math.sqrt(len(in_season) / IN_SEASON_FULL_GAMES))
+         if r_cur is not None else 0.0)
 
     def _blend(cur, allr):
         """Same treatment for both markets. Team ratings are deviations
@@ -2033,7 +2061,11 @@ def _qb_pbp_past(season):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _qb_pbp_current(season):
-    return prep_pbp(load_pbp(nfl, [int(season)]))
+    d = prep_pbp(load_pbp(nfl, [int(season)]))
+    if d.empty:
+        # Raise so an empty result is not cached for half an hour.
+        raise RuntimeError(f"no {season} play-by-play yet")
+    return d
 
 
 def _qb_db(season):
@@ -2188,10 +2220,15 @@ def expected_qbs(season, week, team):
             return float(R.loc[qid, "rating"])
         return qb_rating_of("late", q)
 
-    # Usual starter: most dropbacks for this team, this season before this
-    # week, else last season.
+    # Usual starter: most dropbacks for this team THIS season before this
+    # week. Week 1 compares with last season's starter. If this season's
+    # plays are missing, there is no comparison rather than a stale one
+    # (that is how "Murray for McCarthy" appeared).
     usual_id, usual_name = None, None
-    for s_ in (int(season), int(season) - 1):
+    have_cur = bool(len(db[db["season"] == int(season)]))
+    look = [int(season)] if (int(week) > 1 and have_cur) else (
+        [int(season) - 1] if int(week) == 1 else [])
+    for s_ in look:
         d = db[(db["team"] == team) & (db["season"] == s_)
                & ((db["season"] < int(season)) | (db["week"] < int(week)))]
         if len(d):
@@ -3532,6 +3569,16 @@ with tab_slate:
                             _e["rating"] - _e["usual_rating"])
                         _qbc.append(f'{_e["team"]}: {_qb_last(_e["starter"])} '
                                     f'for {_qb_last(_e["usual"])} ({_pts:+.1f})')
+            try:
+                _cur_ok = bool(len(_qb_db(season).query("season == @season")))
+            except Exception:
+                _cur_ok = False
+            if not _cur_ok and int(week) > 1:
+                _h.append(
+                    f'<div class="sc-note warn">No {season} play-by-play '
+                    f'loaded \u2014 QB ratings are using games through '
+                    f'{int(season) - 1} only, and starter changes cannot be '
+                    f'flagged. Try Refresh lines in a few minutes.</div>')
             if _qbc:
                 _h.append(
                     '<div class="sc-note">Quarterback changes priced: <b>'
