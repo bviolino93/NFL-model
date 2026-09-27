@@ -62,7 +62,10 @@ GROUP_LABEL = {"QB": "quarterback", "OL": "offensive line", "SKILL": "WR/TE/RB",
 
 # Chance each status means the player sits. Used ONLY until measure() has run;
 # the measured rates in injury_adjustment.json replace these.
-DEFAULT_MISS_PROB = {"out": 1.0, "doubtful": 0.9, "questionable": 0.25}
+DEFAULT_MISS_PROB = {"out": 1.0, "doubtful": 0.9, "questionable": 0.25,
+                     # On injured reserve / PUP: off the weekly report
+                     # entirely, so found through the weekly roster instead.
+                     "reserve": 1.0}
 
 # Early in a season there are only a game or two of snaps. Blend in last
 # season's share as if it were this many games of evidence.
@@ -122,6 +125,52 @@ def prep_injuries(inj):
     return d.drop_duplicates(["season", "week", "team", "key"])
 
 
+def prep_reserve(ros):
+    """
+    Weekly rosters -> players on reserve (IR, PUP, NFI) that week, in the
+    same shape as prep_injuries.
+
+    This closes the injury report's biggest hole: a starter placed on IR
+    drops off the report, so a season-ending injury was invisible. Only
+    players who have taken snaps this season are counted (enforced in
+    team_injury_loads), so reserve/retired names and camp casualties with
+    no role on this year's team are not.
+    """
+    cols = ["season", "week", "team", "player", "key", "group", "status"]
+    if ros is None or len(ros) == 0:
+        return pd.DataFrame(columns=cols)
+    d = ros
+    stt = d["status"].astype(str).str.upper().str.strip() \
+        if "status" in d.columns else pd.Series("", index=d.index)
+    d = d[stt == "RES"]
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    name = (d["full_name"] if "full_name" in d.columns
+            else d["player_name"] if "player_name" in d.columns
+            else d.get("first_name", "").astype(str) + " "
+            + d.get("last_name", "").astype(str))
+    out = pd.DataFrame({
+        "season": pd.to_numeric(d["season"], errors="coerce"),
+        "week": pd.to_numeric(d.get("week"), errors="coerce"),
+        "team": d["team"].map(canon),
+        "player": name.astype(str),
+        "group": d["position"].map(group_of),
+        "status": "reserve",
+    })
+    out = out.dropna(subset=["season", "week", "group"])
+    out["key"] = out["player"].map(name_key)
+    return out[cols].drop_duplicates(["season", "week", "team", "key"])
+
+
+def combine_reports(inj, reserve):
+    """Injury report plus reserve list. Anyone on both keeps the report
+    entry, which is the more specific of the two."""
+    if reserve is None or len(reserve) == 0:
+        return inj
+    both = pd.concat([inj, reserve[inj.columns]], ignore_index=True)
+    return both.drop_duplicates(["season", "week", "team", "key"], keep="first")
+
+
 def prep_snaps(sn):
     """nflverse snap counts -> player-game rows with the relevant share."""
     if sn is None or len(sn) == 0:
@@ -151,12 +200,14 @@ def prep_snaps(sn):
 
 def _player_share(snaps, season, week, team_games_col="team"):
     """
-    Each player's share of his team's snaps in the games BEFORE this week,
-    blended with last season's share early on.
+    Each player's share of his team's snaps before this week, blended with
+    last season's share early on.
 
-    Dividing by the team's games (not the player's) is deliberate: a starter
-    who has missed the last month has already been out of the games the
-    in-season rating was fit on, so he should move this week's number less.
+    The share is LOCKED at its pre-absence level: it is measured over the
+    team's games up to the last one he played, not over every game since.
+    The ratings are fit net of injuries, so they describe each team at full
+    strength; a starter who has been out a month is still missing a starter's
+    worth, and letting his share decay would slowly stop charging for it.
     """
     cur = snaps[(snaps["season"] == season) & (snaps["week"] < week)]
     prev = snaps[snaps["season"] == season - 1]
@@ -164,21 +215,24 @@ def _player_share(snaps, season, week, team_games_col="team"):
     def _shares(df):
         if df.empty:
             return pd.Series(dtype=float), pd.Series(dtype=float)
-        n_team = df.groupby("team")["game_id"].nunique()
-        last_team = (df.sort_values("week").groupby("key")["team"].last())
+        games = df[["team", "week", "game_id"]].drop_duplicates()
+        cum = (games.groupby(["team", "week"]).size()
+                    .groupby(level=0).cumsum().rename("n_thru").reset_index())
+        last = (df.sort_values("week").groupby("key")
+                  .agg(team=("team", "last"), week=("week", "max"))
+                  .reset_index())
+        last = last.merge(cum, on=["team", "week"], how="left")
+        n = last.set_index("key")["n_thru"]
         tot = df.groupby("key")["share"].sum()
-        n = last_team.map(n_team).reindex(tot.index).fillna(1.0).clip(lower=1)
+        n = n.reindex(tot.index).fillna(1.0).clip(lower=1)
         return tot, n
 
     s_cur, n_cur = _shares(cur)
     s_prev, n_prev = _shares(prev)
     keys = s_cur.index.union(s_prev.index)
-    s_cur, n_cur = s_cur.reindex(keys).fillna(0.0), n_cur.reindex(keys).fillna(0.0)
+    s_cur = s_cur.reindex(keys).fillna(0.0)
+    n_cur = n_cur.reindex(keys).fillna(0.0)
     prev_rate = (s_prev / n_prev).reindex(keys).fillna(0.0).clip(0, 1)
-    # Team games this season, for players who have not appeared yet.
-    if not cur.empty:
-        team_n = cur.groupby("team")["game_id"].nunique()
-        n_cur = n_cur.where(n_cur > 0, team_n.median())
     k = PRIOR_GAMES
     rate = (s_cur + k * prev_rate) / (n_cur + k)
     return rate.clip(0, 1)
@@ -199,6 +253,13 @@ def team_injury_loads(inj_week, snaps, season, week, miss_prob=None,
     if iw.empty:
         return {}
     share = _player_share(snaps, season, week)
+    # Reserve players count only if they have played for this team this
+    # season. That keeps retired or long-gone names off the ledger.
+    played_now = set(snaps.loc[(snaps["season"] == season)
+                               & (snaps["week"] < week), "key"])
+    iw = iw[(iw["status"] != "reserve") | iw["key"].isin(played_now)]
+    if iw.empty:
+        return {}
     iw = iw.assign(share=iw["key"].map(share).fillna(0.0),
                    p_miss=iw["status"].map(mp).fillna(0.0))
     iw = iw.assign(load=iw["share"] * iw["p_miss"])
@@ -411,6 +472,12 @@ def measure(seasons=None, nfl=None, log=print):
     sched = nfl.import_schedules(seasons)
     log("Loading injury reports...")
     inj = prep_injuries(nfl.import_injuries(seasons))
+    log("Loading weekly rosters (injured reserve)...")
+    try:
+        inj = combine_reports(
+            inj, prep_reserve(nfl.import_weekly_rosters(seasons)))
+    except Exception as e:
+        log(f"Weekly rosters unavailable ({e}); report only.")
     log("Loading snap counts...")
     snaps = prep_snaps(nfl.import_snap_counts(snap_seasons))
 
@@ -480,7 +547,7 @@ def measure(seasons=None, nfl=None, log=print):
     bt, set_, sdt = _fit(Xt, g["total"].values.astype(float), 4)
 
     out = {
-        "version": 2,
+        "version": 4,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "seasons": [seasons[0], seasons[-1]],
         "n_games": n,
@@ -514,16 +581,364 @@ def measure(seasons=None, nfl=None, log=print):
             mc["total"] = {"OFF": _stat(b[0], se[0]), "DEF": _stat(b[1], se[1]),
                            "QB": _stat(b[2], se[2])}
     out["market_check"] = mc
+
+    # Individual quarterback ratings. Optional: if play-by-play cannot be
+    # loaded the injury model still stands, with its flat QB group.
+    try:
+        out["qb"] = measure_qb(nfl, sched, [s_ for s_ in seasons if s_ >= 2016],
+                               log=log)
+    except Exception as e:
+        log(f"QB ratings not measured: {type(e).__name__}: {e}")
+        out["qb_error"] = f"{type(e).__name__}: {e}"
     log(json.dumps(out, indent=2))
     return out
 
+# ======================================================================
+# Quarterback ratings
+#
+# Every quarterback gets his own value: expected points added per dropback,
+# built so a small sample cannot fool it, and measured against real games
+# before it is allowed to move a line.
+#
+#   * Garbage time out: only plays with win probability 10-90%.
+#   * Opponent-adjusted: each play is credited net of how many EPA that
+#     defense has been allowing.
+#   * Recency-weighted: a play loses half its weight every QB_HALF_LIFE
+#     weeks, so this season counts most and three years ago barely.
+#   * Blended: EPA/dropback is noisy; completion % over expected and sack
+#     rate settle faster. How much each predicts future EPA is fit on past
+#     QB seasons, not assumed.
+#   * Shrunk to a prior set by draft slot, measured from how quarterbacks
+#     drafted in that range actually played in their first 300 dropbacks.
+#
+# The points value (how many points one EPA/dropback of QB quality is worth)
+# is measured on history with a strength term for every team-season, so it
+# comes from games where a team's QB changed mid-season.
+# ======================================================================
+QB_HALF_LIFE = 20.0          # weeks
+QB_LOOKBACK = 4              # seasons of plays used for a rating
+QB_K = {"epa": 250.0, "cpoe": 150.0, "sack": 150.0}   # shrinkage, dropbacks
+QB_K_DEF = 250.0             # shrinkage for the defense adjustment
+QB_MIN_T = 2.0
+QB_CAP_PTS = 12.0            # safety rail per game
+
+
+def _draft_bucket(rnd):
+    try:
+        r = int(rnd)
+    except Exception:
+        return "late"
+    return "r1" if r == 1 else ("r23" if r <= 3 else "late")
+
+
+def prep_draft(dp):
+    """{player key: bucket} for drafted quarterbacks. Keyed by gsis id AND
+    name so either identifier finds him."""
+    out = {}
+    if dp is None or len(dp) == 0:
+        return out
+    d = dp.copy()
+    pos = d.get("position", d.get("pos", pd.Series("", index=d.index)))
+    d = d[pos.astype(str).str.upper() == "QB"]
+    rcol = "round" if "round" in d.columns else None
+    if rcol is None:
+        return out
+    namecol = ("pfr_player_name" if "pfr_player_name" in d.columns
+               else "player_name" if "player_name" in d.columns else None)
+    for _, r in d.iterrows():
+        b = _draft_bucket(r[rcol])
+        gid = r.get("gsis_id")
+        if isinstance(gid, str) and gid:
+            out[gid] = b
+        if namecol and isinstance(r.get(namecol), str):
+            out["name:" + name_key(r[namecol])] = b
+    return out
+
+
+def prep_pbp(pbp):
+    """nflverse play-by-play -> quarterback dropbacks only."""
+    cols = ["season", "week", "t", "team", "opp", "qb_id", "qb_name", "epa",
+            "cpoe", "sack", "att", "ok"]
+    if pbp is None or len(pbp) == 0:
+        return pd.DataFrame(columns=cols)
+    d = pbp
+    if "season_type" in d.columns:
+        d = d[d["season_type"].astype(str).str.upper().isin(["REG", "POST"])]
+    db = pd.to_numeric(d.get("qb_dropback"), errors="coerce").fillna(0)
+    d = d[db == 1]
+    qid = d["passer_id"] if "passer_id" in d.columns else d.get("passer_player_id")
+    qnm = d["passer"] if "passer" in d.columns else d.get("passer_player_name")
+    if "rusher_player_id" in d.columns:            # scrambles, older data
+        qid = qid.fillna(d["rusher_player_id"])
+        if "rusher_player_name" in d.columns:
+            qnm = qnm.fillna(d["rusher_player_name"])
+    epa = pd.to_numeric(d.get("qb_epa", d.get("epa")), errors="coerce")
+    wp = pd.to_numeric(d.get("wp"), errors="coerce")
+    sack = pd.to_numeric(d.get("sack"), errors="coerce").fillna(0)
+    att = pd.to_numeric(d.get("pass_attempt"), errors="coerce").fillna(0)
+    out = pd.DataFrame({
+        "season": pd.to_numeric(d["season"], errors="coerce"),
+        "week": pd.to_numeric(d["week"], errors="coerce"),
+        "game_id": d["game_id"].astype(str),
+        "team": d["posteam"].map(canon),
+        "opp": d["defteam"].map(canon),
+        "qb_id": qid.astype(str),
+        "qb_name": qnm.astype(str),
+        "epa": epa,
+        "cpoe": pd.to_numeric(d.get("cpoe"), errors="coerce"),
+        "sack": sack,
+        "att": ((att == 1) & (sack == 0)).astype(float),
+        # Garbage time out; unknown win probability kept.
+        "ok": (wp.isna() | ((wp >= 0.10) & (wp <= 0.90))),
+    })
+    out = out.dropna(subset=["season", "week", "epa"])
+    out = out[out["qb_id"].str.len() > 3]
+    out["t"] = out["season"] * 100 + out["week"]
+    return out
+
+
+def qb_components(db, season, week, draft, priors):
+    """
+    Each QB's shrunk EPA/dropback, CPOE and sack rate, using only plays
+    before (season, week). Returns a DataFrame indexed by qb_id.
+    """
+    t0 = season * 100 + week
+    d = db[(db["t"] < t0) & (db["season"] >= season - QB_LOOKBACK) & db["ok"]]
+    if d.empty:
+        return pd.DataFrame(columns=["name", "team", "n", "epa", "cpoe",
+                                     "sack", "bucket"])
+    age = (season - d["season"]) * 20.0 + (week - d["week"])
+    w = np.power(0.5, age.clip(lower=0) / QB_HALF_LIFE)
+    d = d.assign(w=w)
+    lg = float(np.average(d["epa"], weights=d["w"]))
+    # Defense adjustment from the same window, same weights.
+    dd = d.assign(x=d["w"] * (d["epa"] - lg)).groupby("opp")
+    def_eff = dd["x"].sum() / (dd["w"].sum() + QB_K_DEF)
+    d = d.assign(ea=d["epa"] - d["opp"].map(def_eff).fillna(0.0))
+    has_c = d["cpoe"].notna() & (d["att"] > 0)
+    d = d.assign(we=d["w"] * d["ea"], ws=d["w"] * d["sack"],
+                 wc=np.where(has_c, d["w"] * d["cpoe"].fillna(0), 0.0),
+                 wcn=np.where(has_c, d["w"], 0.0))
+    g = d.sort_values("t").groupby("qb_id").agg(
+        W=("w", "sum"), E=("we", "sum"), S=("ws", "sum"), C=("wc", "sum"),
+        CN=("wcn", "sum"), n=("w", "size"), name=("qb_name", "last"),
+        team=("team", "last"))
+    b = pd.Series([draft.get(i, draft.get("name:" + name_key(nm), "late"))
+                   for i, nm in zip(g.index, g["name"])], index=g.index)
+    pe = b.map(lambda x: priors.get(x, priors["late"])["epa"])
+    pc = b.map(lambda x: priors.get(x, priors["late"])["cpoe"])
+    ps = b.map(lambda x: priors.get(x, priors["late"])["sack"])
+    return pd.DataFrame({
+        "name": g["name"], "team": g["team"], "n": g["n"], "bucket": b,
+        "epa": (g["E"] + QB_K["epa"] * pe) / (g["W"] + QB_K["epa"]),
+        "cpoe": (g["C"] + QB_K["cpoe"] * pc) / (g["CN"] + QB_K["cpoe"]),
+        "sack": (g["S"] + QB_K["sack"] * ps) / (g["W"] + QB_K["sack"]),
+    })
+
+
+def qb_rating_of(comp_row_or_bucket, qbp):
+    """Composite rating (EPA/dropback scale) from components, or from the
+    draft-bucket prior for a QB with no plays."""
+    c = qbp["composite"]
+    if isinstance(comp_row_or_bucket, str):
+        p = qbp["priors"].get(comp_row_or_bucket, qbp["priors"]["late"])
+        e, cp, sk = p["epa"], p["cpoe"], p["sack"]
+    else:
+        e, cp, sk = (comp_row_or_bucket["epa"], comp_row_or_bucket["cpoe"],
+                     comp_row_or_bucket["sack"])
+    return float(c["a"] + c["epa"] * e + c["cpoe"] * cp + c["sack"] * sk)
+
+
+def qb_ratings(db, season, week, draft, qbp):
+    comp = qb_components(db, season, week, draft, qbp["priors"])
+    if comp.empty:
+        return comp.assign(rating=pd.Series(dtype=float))
+    c = qbp["composite"]
+    return comp.assign(rating=c["a"] + c["epa"] * comp["epa"]
+                       + c["cpoe"] * comp["cpoe"] + c["sack"] * comp["sack"])
+
+
+def game_starters(db):
+    """Who actually quarterbacked each past game: most dropbacks per team."""
+    if db.empty:
+        return pd.DataFrame(columns=["season", "week", "game_id", "team", "qb_id"])
+    n = (db.groupby(["season", "week", "game_id", "team", "qb_id"]).size()
+           .rename("n").reset_index()
+           .sort_values("n", ascending=False)
+           .drop_duplicates(["game_id", "team"]))
+    return n[["season", "week", "game_id", "team", "qb_id"]]
+
+
+def starter_ratings_table(db, seasons, draft, qbp):
+    """Pregame rating of the QB who actually started, for every team-game in
+    these seasons. Used for the past games the power ratings are fit on."""
+    st_ = game_starters(db[db["season"].isin(list(seasons))])
+    rows = []
+    for (s_, w_), grp in st_.groupby(["season", "week"]):
+        r = qb_ratings(db, int(s_), int(w_), draft, qbp)["rating"]
+        for row in grp.itertuples():
+            rows.append({"season": int(s_), "week": int(w_), "team": row.team,
+                         "qb_id": row.qb_id,
+                         "rating": float(r.get(row.qb_id, qb_rating_of("late", qbp)))})
+    return pd.DataFrame(rows, columns=["season", "week", "team", "qb_id", "rating"])
+
+
+def qb_usable(qbp, key="margin"):
+    try:
+        c = qbp[key]
+        return c["coef"] > 0 and c["t"] >= QB_MIN_T
+    except Exception:
+        return False
+
+
+def _fe(games, symmetric):
+    ts = sorted(set(zip(games["season"], games["home_team"]))
+                | set(zip(games["season"], games["away_team"])))
+    ix = {k: i for i, k in enumerate(ts)}
+    D = np.zeros((len(games), len(ts)))
+    for r, (s_, h, a) in enumerate(zip(games["season"], games["home_team"],
+                                       games["away_team"])):
+        D[r, ix[(s_, h)]] = 1.0
+        D[r, ix[(s_, a)]] = 1.0 if symmetric else -1.0
+    return D
+
+
+def measure_qb(nfl, sched, seasons, log=print):
+    """
+    Fit the QB model: draft priors, the component blend, and the points
+    value of QB quality. Returns the dict stored under "qb".
+    """
+    seasons = [int(s) for s in seasons]
+    pbp_seasons = list(range(min(seasons) - 3, max(seasons) + 1))
+    log("Loading play-by-play for QB ratings...")
+    db = prep_pbp(load_pbp(nfl, pbp_seasons))
+    if db.empty:
+        raise RuntimeError("no play-by-play")
+    try:
+        draft = prep_draft(nfl.import_draft_picks())
+    except Exception:
+        draft = {}
+
+    # Priors: how QBs from each draft range played in their first 300
+    # dropbacks. Garbage time out.
+    ok = db[db["ok"]].sort_values("t")
+    ok = ok.assign(i=ok.groupby("qb_id").cumcount())
+    early = ok[ok["i"] < 300]
+    bkt = [draft.get(i, draft.get("name:" + name_key(n), "late"))
+           for i, n in zip(early["qb_id"], early["qb_name"])]
+    early = early.assign(b=bkt)
+    priors = {}
+    for b_ in ("r1", "r23", "late"):
+        e = early[early["b"] == b_]
+        if len(e) < 500:
+            e = early
+        att = e[e["att"] > 0]
+        priors[b_] = {"epa": float(e["epa"].mean()),
+                      "cpoe": float(att["cpoe"].mean()),
+                      "sack": float(e["sack"].mean())}
+    log(f"QB priors by draft slot: {priors}")
+
+    # Composite: which shrunk components predict a QB's EPA/dropback in the
+    # season AHEAD. Weighted by that season's dropbacks.
+    X, y, wts = [], [], []
+    for s_ in seasons:
+        comp = qb_components(db, s_, 1, draft, priors)
+        cur = db[(db["season"] == s_) & db["ok"]].groupby("qb_id")["epa"] \
+            .agg(["mean", "size"])
+        cur = cur[cur["size"] >= 150]
+        j = comp.join(cur, how="inner")
+        for r in j.itertuples():
+            X.append([1.0, r.epa, r.cpoe, r.sack])
+            y.append(float(r.mean))
+            wts.append(float(r.size))
+    X, y, wts = np.array(X), np.array(y, dtype=float), np.array(wts)
+    if len(y) < 40:
+        raise RuntimeError("too few QB seasons for the blend")
+    sw = np.sqrt(wts)
+    # A component must point the way football says (EPA and CPOE up, sacks
+    # down). One that fits backwards is noise; drop it and refit.
+    names = ["a", "epa", "cpoe", "sack"]
+    sign = {"epa": 1, "cpoe": 1, "sack": -1}
+    keep = [0, 1, 2, 3]
+    for _ in range(3):
+        b_, *_r = np.linalg.lstsq(X[:, keep] * sw[:, None], y * sw, rcond=None)
+        coef = dict(zip([names[i] for i in keep], b_))
+        bad = [names.index(k_) for k_, v in coef.items()
+               if k_ in sign and np.sign(v) != sign[k_]]
+        if not bad:
+            break
+        keep = [i for i in keep if i not in bad]
+    composite = {k_: float(coef.get(k_, 0.0)) for k_ in names}
+    log(f"QB composite: {composite} on {len(y)} QB-seasons")
+    qbp = {"priors": priors, "composite": composite}
+
+    # Points per EPA/dropback of QB quality, from mid-season QB changes.
+    tbl = starter_ratings_table(db, seasons, draft, qbp)
+    g = sched.dropna(subset=["home_score", "away_score"]).copy()
+    for c_ in ("home_team", "away_team"):
+        g[c_] = g[c_].map(canon)
+    g["season"] = pd.to_numeric(g["season"], errors="coerce")
+    g["week"] = pd.to_numeric(g["week"], errors="coerce")
+    g = g[g["season"].isin(seasons)]
+    for side in ("home", "away"):
+        g = g.merge(tbl.rename(columns={"team": f"{side}_team",
+                                        "rating": f"{side}_qbr",
+                                        "qb_id": f"{side}_qb"}),
+                    on=["season", "week", f"{side}_team"], how="inner")
+    g = g.drop_duplicates("game_id")
+    ref = float(pd.concat([g["home_qbr"], g["away_qbr"]]).mean())
+    margin = (g["home_score"] - g["away_score"]).values.astype(float)
+    total = (g["home_score"] + g["away_score"]).values.astype(float)
+    one = np.ones((len(g), 1))
+    Xm = np.hstack([(g["home_qbr"] - g["away_qbr"]).values[:, None], one,
+                    _fe(g, False)])
+    bm, sem, _ = _fit(Xm, margin, 2)
+    Xt = np.hstack([(g["home_qbr"] + g["away_qbr"] - 2 * ref).values[:, None],
+                    one, _fe(g, True)])
+    bt, set_, _ = _fit(Xt, total, 2)
+    out = {"priors": priors, "composite": composite, "ref": ref,
+           "n_games": int(len(g)), "n_qb_seasons": int(len(y)),
+           "margin": _stat(bm[0], sem[0]), "total": _stat(bt[0], set_[0])}
+    log(f"QB points value: {out['margin']} (margin), {out['total']} (total)")
+    return out
+
+
+def load_pbp(nfl, seasons):
+    """Only the columns the QB model needs; play-by-play is the heaviest
+    nflverse file and Streamlit's memory is limited."""
+    want = ["season", "week", "game_id", "season_type", "posteam", "defteam",
+            "qb_dropback", "sack", "pass_attempt", "qb_epa", "cpoe", "wp",
+            "passer", "passer_id"]
+    alt = ["season", "week", "game_id", "season_type", "posteam", "defteam",
+           "qb_dropback", "sack", "pass_attempt", "qb_epa", "cpoe", "wp",
+           "passer_player_id", "passer_player_name", "rusher_player_id",
+           "rusher_player_name"]
+    frames = []
+    for s_ in seasons:
+        df = None
+        for cols in (want, alt):
+            try:
+                df = nfl.import_pbp_data([int(s_)], columns=cols,
+                                         downcast=True, cache=False)
+                break
+            except TypeError:
+                df = nfl.import_pbp_data([int(s_)])
+                break
+            except Exception:
+                continue
+        if df is not None and len(df):
+            frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 # Part of every injury cache key: when the position groups change, anything
 # Streamlit cached under the old groups is ignored instead of reused.
-INJ_SCHEMA = "v2:" + ",".join(GROUPS)
+INJ_SCHEMA = "v4:" + ",".join(GROUPS)
 
 inj_mod = types.SimpleNamespace(
     GROUPS=GROUPS, GROUP_LABEL=GROUP_LABEL, usable=usable,
     prep_injuries=prep_injuries, prep_snaps=prep_snaps,
+    prep_reserve=prep_reserve, combine_reports=combine_reports,
     team_injury_loads=team_injury_loads, season_loads=season_loads,
     history_offsets=history_offsets, game_deltas=game_deltas,
     measure=measure,
@@ -682,6 +1097,8 @@ def model_version():
     # on are tagged and can be scored separately from those without.
     if load_injury_adjustment():
         v += f"-inj{load_injury_adjustment().get('version', 1)}"
+        if qb_model_on():
+            v += "-qbr1"
     return v
 
 TRACKER_COLS = [
@@ -1395,7 +1812,7 @@ def qb_delta(season, week, h, a):
     """Points added to the home margin for a quarterback downgrade on either
     side. Zero when the QB measurement file is absent. Returns (delta, note)."""
     adj = load_qb_adjustment()
-    if not adj:
+    if not adj or qb_model_on():
         return 0.0, None
     pen = float(adj["penalty_points"])
     stat = qb_status(season, week)
@@ -1408,9 +1825,10 @@ def qb_delta(season, week, h, a):
 
 def _valid_injury_adj(d):
     try:
-        # Version 2 added quarterbacks; an older saved copy is re-measured.
+        # v2 added quarterbacks, v3 injured reserve, v4 locked snap shares
+        # and individual QB ratings; older copies re-measure.
         return (isinstance(d, dict) and isinstance(d.get("margin"), dict)
-                and "QB" in d["margin"] and int(d.get("version", 1)) >= 2
+                and "QB" in d["margin"] and int(d.get("version", 1)) >= 4
                 and int(d.get("n_games", 0)) >= 500)
     except Exception:
         return False
@@ -1513,8 +1931,27 @@ def load_injury_adjustment():
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _inj_report(season):
-    return inj_mod.prep_injuries(nfl.import_injuries([int(season)]))
+def _inj_report(season, schema=None):
+    """Injury report plus players on reserve, for one season."""
+    rep = inj_mod.prep_injuries(nfl.import_injuries([int(season)]))
+    try:
+        res = inj_mod.prep_reserve(nfl.import_weekly_rosters([int(season)]))
+    except Exception:
+        res = inj_mod.prep_reserve(None)
+    # The weekly roster for the newest week can lag the news (a Thursday IR
+    # move). If this week's report exists but its roster week does not,
+    # take reserve status from the season roster, which is current.
+    try:
+        wk_rep = int(rep["week"].max()) if len(rep) else None
+        wk_res = int(res["week"].max()) if len(res) else None
+        if wk_rep is not None and (wk_res is None or wk_res < wk_rep):
+            cur = nfl.import_seasonal_rosters([int(season)]).copy()
+            cur["week"] = wk_rep
+            res = pd.concat([res, inj_mod.prep_reserve(cur)],
+                            ignore_index=True)
+    except Exception:
+        pass
+    return inj_mod.combine_reports(rep, res)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -1539,7 +1976,7 @@ def injury_loads(season, week, schema=None):
     if not adj:
         return {}, "off"
     try:
-        rep = _inj_report(season)
+        rep = _inj_report(season, INJ_SCHEMA)
     except Exception as e:
         return {}, f"injury report unavailable ({type(e).__name__})"
     if rep.empty or not ((rep["week"] == int(week)).any()):
@@ -1558,16 +1995,316 @@ def season_injury_table(season, miss_prob_items, schema=None):
     """Injury load for every team-week of a season, for the games the ratings
     are fit on. Empty (no offset) if the data is not available."""
     try:
-        return inj_mod.season_loads(_inj_report(season), _inj_snaps(season),
+        return inj_mod.season_loads(_inj_report(season, INJ_SCHEMA), _inj_snaps(season),
                                     int(season), dict(miss_prob_items))
     except Exception:
         return pd.DataFrame(columns=["season", "week", "team",
                                      *inj_mod.GROUPS])
 
 
+# ----------------------------------------------------------------------
+# Quarterback ratings, live
+# ----------------------------------------------------------------------
+def qb_params():
+    """The measured QB model, or None if it is not measured or did not clear
+    the bar (then the injury model's flat QB penalty is used instead)."""
+    adj = load_injury_adjustment()
+    q = (adj or {}).get("qb")
+    return q if (q and qb_usable(q, "margin")) else None
+
+
+def qb_model_on():
+    return qb_params() is not None
+
+
+def _skip_inj_qb():
+    """The injury model's flat QB group steps aside when something better
+    prices quarterbacks, so no absence is charged twice."""
+    return bool(load_qb_adjustment()) or qb_model_on()
+
+
+@st.cache_data(ttl=7 * 86400, show_spinner=False)
+def _qb_pbp_past(season):
+    return prep_pbp(load_pbp(nfl, [int(season)]))
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _qb_pbp_current(season):
+    return prep_pbp(load_pbp(nfl, [int(season)]))
+
+
+def _qb_db(season):
+    this_year = datetime.now().year
+    frames = []
+    for s_ in range(int(season) - QB_LOOKBACK, int(season) + 1):
+        try:
+            frames.append(_qb_pbp_current(s_) if s_ >= this_year - 1
+                          else _qb_pbp_past(s_))
+        except Exception:
+            continue
+    frames = [f for f in frames if len(f)]
+    return pd.concat(frames, ignore_index=True) if frames else prep_pbp(None)
+
+
+@st.cache_data(ttl=7 * 86400, show_spinner=False)
+def _qb_draft():
+    try:
+        return prep_draft(nfl.import_draft_picks())
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def qb_ratings_now(season, week, schema=None):
+    """Every QB's pregame rating for this week, from plays before it."""
+    q = qb_params()
+    if not q:
+        return pd.DataFrame()
+    return qb_ratings(_qb_db(season), int(season), int(week), _qb_draft(), q)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _sched_one(season):
+    try:
+        return nfl.import_schedules([int(season)])
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def depth_qbs(season, week, schema=None):
+    """
+    {team: [(gsis_id, full name), ...]} quarterbacks in depth-chart order for
+    this week. Handles both nflverse layouts: the weekly one (club_code,
+    depth_team, week) and the daily snapshots used since 2025 (team,
+    pos_rank, dt).
+    """
+    try:
+        dc = nfl.import_depth_charts([int(season)])
+    except Exception:
+        return {}
+    if dc is None or len(dc) == 0:
+        return {}
+    c = dc.columns
+    pcol = "position" if "position" in c else ("pos_abb" if "pos_abb" in c else None)
+    rcol = "depth_team" if "depth_team" in c else ("pos_rank" if "pos_rank" in c else None)
+    tcol = "club_code" if "club_code" in c else ("team" if "team" in c else None)
+    ncol = "full_name" if "full_name" in c else ("player_name" if "player_name" in c else None)
+    if not all([pcol, rcol, tcol, ncol]):
+        return {}
+    d = dc[dc[pcol].astype(str).str.upper() == "QB"].copy()
+    d["_rank"] = pd.to_numeric(d[rcol], errors="coerce")
+    if "week" in c and pd.to_numeric(d["week"], errors="coerce").notna().any():
+        wk = pd.to_numeric(d["week"], errors="coerce")
+        cur = d[wk == int(week)]
+        if cur.empty:
+            prior = wk[wk <= int(week)]
+            cur = d[wk == prior.max()] if len(prior) else d.iloc[0:0]
+    elif "dt" in c:
+        # Daily snapshots: the latest one before this week's games.
+        sch = _sched_one(season)
+        cutoff = None
+        try:
+            gd = pd.to_datetime(sch.loc[pd.to_numeric(sch["week"]) == int(week),
+                                        "gameday"], errors="coerce")
+            cutoff = gd.max() + pd.Timedelta(days=1)
+        except Exception:
+            pass
+        dt = pd.to_datetime(d["dt"], errors="coerce", utc=True).dt.tz_localize(None)
+        d = d.assign(_dt=dt)
+        if cutoff is not None and pd.notna(cutoff):
+            d = d[d["_dt"] <= cutoff]
+        if d.empty:
+            return {}
+        last = d.groupby(tcol)["_dt"].transform("max")
+        cur = d[d["_dt"] == last]
+    else:
+        cur = d
+    out = {}
+    for team, g in cur.sort_values("_rank").groupby(tcol):
+        seen, lst = set(), []
+        for r in g.itertuples():
+            nm = str(getattr(r, ncol))
+            gid = str(getattr(r, "gsis_id", "") or "")
+            k_ = name_key(nm)
+            if k_ in seen:
+                continue
+            seen.add(k_)
+            lst.append((gid, nm))
+        out[canon(team)] = lst
+    return out
+
+
+def _short_key(full):
+    """'Jaxson Dart' -> 'jdart', to match play-by-play's 'J.Dart'."""
+    toks = [t for t in re.split(r"[\s.]+", str(full))
+            if t and t.lower().strip(".") not in {"jr", "sr", "ii", "iii", "iv", "v"}]
+    if len(toks) < 2:
+        return name_key(full)
+    return name_key(toks[0][0] + toks[-1])
+
+
+def _unavailable(season, week, team):
+    """Name keys of this team's players ruled out, doubtful or on reserve."""
+    try:
+        rep = _inj_report(season, INJ_SCHEMA)
+    except Exception:
+        return set()
+    r = rep[(rep["season"] == int(season)) & (rep["week"] == int(week))
+            & (rep["team"] == canon(team))
+            & rep["status"].isin(["out", "doubtful", "reserve"])]
+    return set(r["key"])
+
+
+def expected_qbs(season, week, team):
+    """
+    Who is expected to start this week, and who the team's usual starter is.
+
+    Starter: the depth chart's top QB who is not out, doubtful or on reserve.
+    Without a depth chart: the QB with the most dropbacks this season who is
+    available. If nobody known is available, a replacement-level backup.
+    """
+    q = qb_params()
+    if not q:
+        return None
+    R = qb_ratings_now(season, week, INJ_SCHEMA)
+    db = _qb_db(season)
+    team = canon(team)
+    out_keys = _unavailable(season, week, team)
+
+    def _find(gid, nm):
+        if gid and gid in R.index:
+            return gid
+        sk = _short_key(nm)
+        hit = [i for i, n in zip(R.index, R["name"]) if name_key(n) == sk] \
+            if len(R) else []
+        return hit[0] if hit else None
+
+    def _rate(qid):
+        if qid is not None and qid in R.index:
+            return float(R.loc[qid, "rating"])
+        return qb_rating_of("late", q)
+
+    # Usual starter: most dropbacks for this team, this season before this
+    # week, else last season.
+    usual_id, usual_name = None, None
+    for s_ in (int(season), int(season) - 1):
+        d = db[(db["team"] == team) & (db["season"] == s_)
+               & ((db["season"] < int(season)) | (db["week"] < int(week)))]
+        if len(d):
+            top = d.groupby("qb_id").size().idxmax()
+            usual_id = top
+            usual_name = str(d.loc[d["qb_id"] == top, "qb_name"].iloc[-1])
+            break
+
+    starter_id, starter_name, source = None, None, None
+    for gid, nm in depth_qbs(season, week, INJ_SCHEMA).get(team, []):
+        if name_key(nm) in out_keys:
+            continue
+        starter_id, starter_name, source = _find(gid, nm), nm, "depth chart"
+        break
+    if starter_name is None:
+        # No usable depth chart: most-used QB this season who is available.
+        d = db[(db["team"] == team) & (db["season"] == int(season))
+               & (db["week"] < int(week))]
+        order = (d.groupby(["qb_id", "qb_name"]).size()
+                   .sort_values(ascending=False).reset_index())
+        for r in order.itertuples():
+            if not any(k_ in out_keys and _short_key_match(k_, r.qb_name)
+                       for k_ in out_keys):
+                starter_id, starter_name, source = r.qb_id, r.qb_name, "usage"
+                break
+    if starter_name is None:
+        starter_name, source = "unknown backup", "replacement level"
+
+    return {"team": team, "starter_id": starter_id, "starter": starter_name,
+            "rating": _rate(starter_id), "source": source,
+            "usual_id": usual_id, "usual": usual_name,
+            "usual_rating": _rate(usual_id) if usual_id else None,
+            "changed": bool(usual_id and starter_id != usual_id)}
+
+
+def _short_key_match(full_key, pbp_name):
+    """Does a full-name key ('jaxsondart') belong to 'J.Dart'?"""
+    pk = name_key(pbp_name)
+    return len(pk) > 1 and full_key.endswith(pk[1:]) and full_key[0] == pk[0]
+
+
+def _qb_last(nm):
+    """'J.Dart' / 'Jaxson Dart' / 'Kenneth Walker III' -> surname."""
+    t = [x for x in re.split(r"[\s.]+", str(nm))
+         if x and x.lower() not in {"jr", "sr", "ii", "iii", "iv", "v"}]
+    return t[-1] if t else str(nm)
+
+
+def qb_game_delta(season, week, h, a):
+    """(margin_delta, total_delta, note, info) from the two starters.
+    The power ratings are fit with every past QB taken out, so this adds the
+    actual starters back in: an unchanged QB nets to roughly nothing, a
+    change moves the line by the gap between the two men."""
+    q = qb_params()
+    if not q:
+        return 0.0, 0.0, None, {}
+    eh, ea = expected_qbs(season, week, h), expected_qbs(season, week, a)
+    if not eh or not ea:
+        return 0.0, 0.0, None, {}
+    k = float(q["margin"]["coef"])
+    kt = float(q["total"]["coef"]) if qb_usable(q, "total") else 0.0
+    ref = float(q["ref"])
+    dm = float(np.clip(k * (eh["rating"] - ea["rating"]), -QB_CAP_PTS, QB_CAP_PTS))
+    dt = float(np.clip(kt * (eh["rating"] + ea["rating"] - 2 * ref),
+                       -QB_CAP_PTS, QB_CAP_PTS))
+    notes = []
+    for e_ in (ea, eh):
+        if e_["changed"] and e_.get("usual_rating") is not None:
+            e_["change_pts"] = k * (e_["rating"] - e_["usual_rating"])
+            notes.append(f"{e_['team']}: {_qb_last(e_['starter'])} for "
+                         f"{_qb_last(e_['usual'])} ({e_['change_pts']:+.1f})")
+    return dm, dt, ("; ".join(notes) or None), {"home": eh, "away": ea}
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def qb_history_table(season, schema=None):
+    """Pregame rating of each past starter this season, for the fit."""
+    q = qb_params()
+    if not q:
+        return pd.DataFrame(columns=["season", "week", "team", "qb_id", "rating"])
+    try:
+        return starter_ratings_table(_qb_db(season), [int(season)],
+                                     _qb_draft(), q)
+    except Exception:
+        return pd.DataFrame(columns=["season", "week", "team", "qb_id", "rating"])
+
+
+def qb_history_offsets(games):
+    """Points of each past result that came from who played quarterback."""
+    z = pd.Series(0.0, index=games.index)
+    q = qb_params()
+    if not q or games.empty:
+        return z, z.copy()
+    ref = float(q["ref"])
+    k = float(q["margin"]["coef"])
+    kt = float(q["total"]["coef"]) if qb_usable(q, "total") else 0.0
+    T = pd.concat([qb_history_table(int(s_), INJ_SCHEMA) for s_ in
+                   sorted(pd.to_numeric(games["season"]).unique())],
+                  ignore_index=True)
+    if T.empty:
+        return z, z.copy()
+    T = T.drop_duplicates(["season", "week", "team"])
+    key = T.set_index(["season", "week", "team"])["rating"]
+    def _r(side):
+        idx = list(zip(pd.to_numeric(games["season"]).astype(int),
+                       pd.to_numeric(games["week"]).astype(int),
+                       games[f"{side}_team"].map(canon)))
+        return pd.Series([key.get(i, ref) for i in idx], index=games.index)
+    rh, ra = _r("home"), _r("away")
+    return ((k * (rh - ra)).clip(-QB_CAP_PTS, QB_CAP_PTS),
+            (kt * (rh + ra - 2 * ref)).clip(-QB_CAP_PTS, QB_CAP_PTS))
+
+
 def injury_history_offsets(games):
-    """(margin_offset, total_offset) for past games; zeros when the
-    adjustment is off."""
+    """(margin_offset, total_offset) for past games: injuries plus who played
+    quarterback. Zeros when the adjustment is off."""
     adj = load_injury_adjustment()
     z = pd.Series(0.0, index=games.index)
     if not adj or games.empty:
@@ -1576,21 +2313,35 @@ def injury_history_offsets(games):
     tables = [season_injury_table(int(s_), mp, INJ_SCHEMA)
               for s_ in sorted(pd.to_numeric(games["season"]).unique())]
     table = pd.concat(tables, ignore_index=True) if tables else None
-    return inj_mod.history_offsets(adj, table, games, min_t=INJ_MIN_T,
-                                   cap=INJ_MAX_PTS,
-                                   skip_qb=bool(load_qb_adjustment()))
+    om, ot = inj_mod.history_offsets(adj, table, games, min_t=INJ_MIN_T,
+                                     cap=INJ_MAX_PTS, skip_qb=_skip_inj_qb())
+    try:
+        qm, qt = qb_history_offsets(games)
+    except Exception:
+        qm, qt = z, z.copy()
+    return om + qm, ot + qt
 
 
 def injury_delta(season, week, h, a):
-    """(margin_delta, total_delta, note, detail) for one game. All zero when
-    the measurement file is absent or the report is not out yet."""
+    """(margin_delta, total_delta, note, detail) for one game: this week's
+    injury report plus the two starting quarterbacks. All zero when the
+    measurement is absent or the report is not out yet."""
     adj = load_injury_adjustment()
     if not adj:
         return 0.0, 0.0, None, {}
     loads, _ = injury_loads(season, week, INJ_SCHEMA)
-    return inj_mod.game_deltas(adj, loads, h, a, min_t=INJ_MIN_T,
-                               cap=INJ_MAX_PTS,
-                               skip_qb=bool(load_qb_adjustment()))
+    dm, dt, note, det = inj_mod.game_deltas(adj, loads, h, a, min_t=INJ_MIN_T,
+                                            cap=INJ_MAX_PTS,
+                                            skip_qb=_skip_inj_qb())
+    try:
+        qm, qt, qnote, qinfo = qb_game_delta(season, week, h, a)
+    except Exception:
+        qm, qt, qnote, qinfo = 0.0, 0.0, None, {}
+    det = dict(det or {})
+    if qinfo:
+        det["qb"] = qinfo
+    note = "; ".join(n for n in (qnote, note) if n) or None
+    return dm + qm, dt + qt, note, det
 
 
 def assign_tiers(card):
@@ -1619,7 +2370,8 @@ def build_card(sched, season, week, sign, offers=None):
     # is large: the penalty is measured, not guessed, and if it has not been
     # measured yet nothing is applied.
     _qb_adj = load_qb_adjustment()
-    _qb_pen = float(_qb_adj["penalty_points"]) if _qb_adj else 0.0
+    _qb_pen = (float(_qb_adj["penalty_points"])
+               if (_qb_adj and not qb_model_on()) else 0.0)
     _qb_stat = qb_status(season, week) if _qb_pen else {}
 
     games = sched[(sched["season"] == season) & (sched["week"] == week)].copy()
@@ -2752,48 +3504,70 @@ with tab_slate:
         # that too — a reader should never have to guess whether a pick
         # exists because the model spotted something or because it did not
         # know a starter was out.
-        _adj = load_qb_adjustment()
-        if _adj:
-            _stat = qb_status(season, week)
-            _flagged = sorted(t for t, v in _stat.items() if v.get("changed"))
-            _teams_on_card = set(card.get("home_team", [])) | \
-                set(card.get("away_team", []))
-            _down = [t for t in _flagged if t in _teams_on_card
-                     and _stat.get(t, {}).get("direction") == "downgrade"]
-            _other = [t for t in _flagged if t in _teams_on_card
-                      and t not in _down]
-            if _down:
+        if qb_model_on():
+            # Individual QB ratings: name every change and its price.
+            _qbc = []
+            for _, _gr in card.drop_duplicates("matchup").iterrows() if not card.empty else []:
+                for _t in (_gr["away_team"], _gr["home_team"]):
+                    try:
+                        _e = expected_qbs(season, week, _t)
+                    except Exception:
+                        _e = None
+                    if _e and _e["changed"] and _e.get("usual_rating") is not None:
+                        _pts = float(qb_params()["margin"]["coef"]) * (
+                            _e["rating"] - _e["usual_rating"])
+                        _qbc.append(f'{_e["team"]}: {_qb_last(_e["starter"])} '
+                                    f'for {_qb_last(_e["usual"])} ({_pts:+.1f})')
+            if _qbc:
                 _h.append(
-                    f'<div class="sc-note">Backup quarterback adjusted for: '
-                    f'<b>{_html.escape(", ".join(_down))}</b> '
-                    f'({_adj["penalty_points"]:.1f} pts, measured over '
-                    f'{_adj.get("n_games_total", 0):,} games)</div>')
-            if _other:
-                # A returning starter is an upgrade, and the model has no way
-                # to price one. Say so rather than silently ignoring it.
-                _h.append(
-                    f'<div class="sc-note warn">Quarterback change NOT '
-                    f'adjusted for: <b>{_html.escape(", ".join(_other))}</b> '
-                    f'\u2014 the listed starter is not a downgrade, and the '
-                    f'model cannot price an upgrade. Treat these picks with '
-                    f'caution.</div>')
-            if not _down and not _other:
-                _h.append(
-                    '<div class="sc-note">No quarterback changes detected '
-                    'this week.</div>')
-        else:
-            if load_injury_adjustment():
-                _h.append(
-                    '<div class="sc-note">Quarterbacks on the injury report '
-                    'are adjusted through the injury model below. A benched '
-                    '(healthy) starter is not on that report and is NOT '
-                    'adjusted for \u2014 check QB news before betting.</div>')
+                    '<div class="sc-note">Quarterback changes priced: <b>'
+                    + _html.escape("; ".join(_qbc)) + '</b></div>')
             else:
-                _h.append(
-                    '<div class="sc-note warn">No quarterback adjustment '
-                    'applied \u2014 the model does not know who is starting. '
-                    'A pick can exist purely because a starter is out and the '
-                    'line moved without it.</div>')
+                _h.append('<div class="sc-note">Quarterbacks rated individually '
+                          '\u2014 no starter changes on this card.</div>')
+        else:
+            _adj = load_qb_adjustment()
+            if _adj:
+                _stat = qb_status(season, week)
+                _flagged = sorted(t for t, v in _stat.items() if v.get("changed"))
+                _teams_on_card = set(card.get("home_team", [])) | \
+                    set(card.get("away_team", []))
+                _down = [t for t in _flagged if t in _teams_on_card
+                         and _stat.get(t, {}).get("direction") == "downgrade"]
+                _other = [t for t in _flagged if t in _teams_on_card
+                          and t not in _down]
+                if _down:
+                    _h.append(
+                        f'<div class="sc-note">Backup quarterback adjusted for: '
+                        f'<b>{_html.escape(", ".join(_down))}</b> '
+                        f'({_adj["penalty_points"]:.1f} pts, measured over '
+                        f'{_adj.get("n_games_total", 0):,} games)</div>')
+                if _other:
+                    # A returning starter is an upgrade, and the model has no way
+                    # to price one. Say so rather than silently ignoring it.
+                    _h.append(
+                        f'<div class="sc-note warn">Quarterback change NOT '
+                        f'adjusted for: <b>{_html.escape(", ".join(_other))}</b> '
+                        f'\u2014 the listed starter is not a downgrade, and the '
+                        f'model cannot price an upgrade. Treat these picks with '
+                        f'caution.</div>')
+                if not _down and not _other:
+                    _h.append(
+                        '<div class="sc-note">No quarterback changes detected '
+                        'this week.</div>')
+            else:
+                if load_injury_adjustment():
+                    _h.append(
+                        '<div class="sc-note">Quarterbacks on the injury report '
+                        'are adjusted through the injury model below. A benched '
+                        '(healthy) starter is not on that report and is NOT '
+                        'adjusted for \u2014 check QB news before betting.</div>')
+                else:
+                    _h.append(
+                        '<div class="sc-note warn">No quarterback adjustment '
+                        'applied \u2014 the model does not know who is starting. '
+                        'A pick can exist purely because a starter is out and the '
+                        'line moved without it.</div>')
 
         # Same for everyone else on the injury report.
         _iadj = load_injury_adjustment()
@@ -2981,11 +3755,19 @@ with tab_game:
                else "")
             + (f" Injuries this week ({_in_g}): {_im_g:+.1f} to the home "
                f"margin, {_it_g:+.1f} to the total." if _in_g else "")
+            + ((" QBs: " + " \u00b7 ".join(
+                   f"{_e['team']} {_qb_last(_e['starter'])} "
+                   f"({_e['rating']:+.3f} EPA/db)"
+                   + (f", replacing {_qb_last(_e['usual'])} "
+                      f"({_e['usual_rating']:+.3f})" if _e['changed']
+                      and _e.get('usual_rating') is not None else "")
+                   for _e in (_idet_g["qb"]["away"], _idet_g["qb"]["home"])) + ".")
+               if _idet_g.get("qb") else "")
             + (f" Ratings fit net of injuries in "
                f"{rt_g.get('n_injury_adjusted', 0)} past games."
                if rt_g.get("n_injury_adjusted") else "")
         )
-        if _idet_g:
+        if _idet_g and (_idet_g.get("home") or _idet_g.get("away")):
             with st.expander("Injury report used"):
                 for _t, _side in ((a, "away"), (h, "home")):
                     _pl = _idet_g.get(_side, {}).get("players", [])
@@ -3205,6 +3987,20 @@ with tab_tracker:
             _mp = _ia.get("miss_prob", {})
             st.caption("How often each status actually sat: " + ", ".join(
                 f"{k} {v:.0%}" for k, v in _mp.items()))
+            _q = _ia.get("qb")
+            if _q:
+                _qm = _q["margin"]
+                st.caption(
+                    f"Quarterbacks: each 0.10 EPA/dropback of QB quality is "
+                    f"worth {_qm['coef'] * 0.10:.1f} pts on the spread "
+                    f"(t = {_qm['t']:.1f}, from {_q['n_games']:,} games, blend "
+                    f"fit on {_q['n_qb_seasons']} QB-seasons) \u2014 "
+                    + ("in use." if qb_model_on() else
+                       "did not clear the bar, so the flat QB penalty is used."))
+            elif _ia.get("qb_error"):
+                st.caption(f"Quarterback ratings not available "
+                           f"({_ia['qb_error'][:120]}); the flat QB penalty is "
+                           f"used instead.")
             st.caption("'vs closing line' near zero means the market already "
                        "prices these injuries: the adjustment then removes "
                        "false edges rather than creating real ones.")
