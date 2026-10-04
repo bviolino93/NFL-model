@@ -2014,8 +2014,17 @@ def fit_ratings(hist, teams, target, symmetric=False, min_games=40, alpha=None):
 
     # Constant term first, unpenalised: the league-average home margin (or
     # average total). What is left is what the teams have to explain.
-    base = float(np.mean(y))
-    y0 = y - base
+    # Neutral-site games (London, Germany, Mexico...) have no home team, so
+    # they neither inform home field nor get it subtracted.
+    home_flag = np.ones(len(y))
+    if (not symmetric) and "location" in hist.columns:
+        home_flag = (hist["location"].astype(str).str.lower().str.strip()
+                     != "neutral").values.astype(float)
+    if home_flag.sum() > 0:
+        base = float(np.sum(y * home_flag) / home_flag.sum())
+    else:
+        base = float(np.mean(y))
+    y0 = y - base * home_flag
 
     idx = {t: i for i, t in enumerate(teams)}
     X = np.zeros((len(hist), len(teams)))
@@ -2771,6 +2780,18 @@ def game_wx(row):
     return out
 
 
+def is_neutral(row):
+    try:
+        return str(row.get("location", "") or "").lower().strip() == "neutral"
+    except Exception:
+        return False
+
+
+def home_field(row, rt):
+    """Home-field points for this game: none at a neutral site."""
+    return 0.0 if is_neutral(row) else float(rt["hfa"])
+
+
 def assign_tiers(card):
     """OFFICIAL = positive value at your price. WATCH = big disagreement that
     does not beat the vig. Everything else is on the board but not tracked."""
@@ -2826,7 +2847,7 @@ def build_card(sched, season, week, sign, offers=None):
         # disagreeing with a line that moved on news it cannot see.
         _im, _it, _inote, _ = injury_delta(season, week, h, a)
         _inj[g["game_id"]] = (_im, _it, _inote)
-        raw_model = (rt["margin"][h] - rt["margin"][a] + rt["hfa"]) + _qbd + _im
+        raw_model = (rt["margin"][h] - rt["margin"][a] + home_field(g, rt)) + _qbd + _im
         mkt = sign * g["spread_line"] if pd.notna(g.get("spread_line")) else None
         live = lookup_offers(offers, a, h) if offers else None
 
@@ -3244,7 +3265,7 @@ def ml_flags(sched, season, week, rt, sign, offers):
         live = lookup_offers(offers, a, h)
         if not live:
             continue
-        raw = (rt["margin"][h] - rt["margin"][a] + rt["hfa"]
+        raw = (rt["margin"][h] - rt["margin"][a] + home_field(g, rt)
                + qb_delta(season, week, h, a)[0]
                + injury_delta(season, week, h, a)[0])
         p_home = norm_cdf(raw / SD_MARGIN)
@@ -4063,7 +4084,7 @@ with tab_slate:
                 _ng = _ib["matchup"].nunique() if len(_ib) else 0
                 _used = [inj_mod.GROUP_LABEL[g] for g in inj_mod.GROUPS
                          if inj_mod.usable(_iadj, "margin", g, -1, INJ_MIN_T)
-                         and not (g == "QB" and load_qb_adjustment())]
+                         and not (g == "QB" and _skip_inj_qb())]
                 _h.append(
                     f'<div class="sc-note">Injury report applied '
                     f'({_html.escape(", ".join(_used)) or "no position group cleared the bar"}'
@@ -4150,7 +4171,7 @@ with tab_game:
     else:
         h, a = row["home_team"], row["away_team"]
         rh, ra = rt_g["margin"].get(h, 0.0), rt_g["margin"].get(a, 0.0)
-        hfa = rt_g["hfa"]
+        hfa = home_field(row, rt_g)
         _qbd_g, _qb_note_g = qb_delta(g_season, g_week, h, a)
         _im_g, _it_g, _in_g, _idet_g = injury_delta(g_season, g_week, h, a)
         raw = rh - ra + hfa + _qbd_g + _im_g
@@ -4227,8 +4248,11 @@ with tab_game:
                     language=None)
 
         st.caption(
-            f"{h} {rh:+.2f} · {a} {ra:+.2f} · home field {hfa:+.2f} — "
-            f"fit on {rt_g['n_prior']:,} games, {rt_g['n_in_season']} of them "
+            f"{h} {rh:+.2f} · {a} {ra:+.2f} · "
+            + (f"neutral site ({row.get('stadium', '') or 'international'}), "
+               f"no home field \u2014 " if is_neutral(row)
+               else f"home field {hfa:+.2f} \u2014 ")
+            + f"fit on {rt_g['n_prior']:,} games, {rt_g['n_in_season']} of them "
             f"this season ({rt_g['in_season_weight']:.0%} weight)."
             + (f" Adjusted for {_qb_note_g} ({_qbd_g:+.1f})." if _qb_note_g
                else "")
