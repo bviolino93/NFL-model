@@ -3403,7 +3403,10 @@ def capture_closing(tracker, offers, sched=None):
     """
     if tracker is None or tracker.empty or not offers:
         return tracker, 0
-    df = tracker.copy()
+    # Columns read back from Google Sheets arrive as text (or, when empty,
+    # as floats). Newer pandas refuses to write a number into a text column
+    # or text into a float one, so work on flexible columns.
+    df = tracker.copy().astype(object)
     now = pd.Timestamp.now(tz="UTC")
 
     n = 0
@@ -3522,7 +3525,7 @@ def clv_summary(df):
 def grade(tracker, sched):
     if tracker.empty:
         return tracker, 0
-    df = tracker.copy()
+    df = tracker.copy().astype(object)   # see capture_closing
     pend = df["status"].astype(str) != "GRADED"
     if not pend.any():
         return df, 0
