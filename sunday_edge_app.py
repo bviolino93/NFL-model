@@ -1469,6 +1469,22 @@ SHEETS_SETUP_STEPS = """1. Google Cloud - create a service account, download its
 5. Add `gspread` to requirements.txt, then reboot the app"""
 
 
+def _tab(name):
+    """Tab name, with an optional prefix from the `tracker_tab_prefix`
+    secret. Lets Sunday Edge live inside another app's spreadsheet (e.g.
+    "nfl_tracker" next to Saturday Edge's own "tracker") without the two
+    ever reading or writing each other's tabs."""
+    pre = ""
+    for _n in ("tracker_tab_prefix", "TRACKER_TAB_PREFIX"):
+        try:
+            if _n in st.secrets:
+                pre = str(st.secrets[_n])
+                break
+        except Exception:
+            break
+    return f"{pre}{name}"
+
+
 def _sheet(return_error=False):
     """
     Connect to the tracker spreadsheet, and on failure say WHICH step failed.
@@ -1538,12 +1554,12 @@ def _sheet(return_error=False):
         return (None, err) if return_error else None
 
     try:
-        ws = sh.worksheet("tracker")
+        ws = sh.worksheet(_tab("tracker"))
     except Exception:
         try:
-            ws = sh.add_worksheet("tracker", rows=2000, cols=len(TRACKER_COLS))
+            ws = sh.add_worksheet(_tab("tracker"), rows=2000, cols=len(TRACKER_COLS))
         except Exception as e:
-            err = (f"Opened '{name}' but could not create the 'tracker' tab. "
+            err = (f"Opened '{name}' but could not create the '{_tab('tracker')}' tab. "
                    f"Check {email} has Editor access, not Viewer. ({e})")
             return (None, err) if return_error else None
     return (ws, None) if return_error else ws
@@ -2202,12 +2218,12 @@ def _injury_ws(create=False):
     if ws is None:
         return None
     try:
-        return ws.spreadsheet.worksheet("injury_model")
+        return ws.spreadsheet.worksheet(_tab("injury_model"))
     except Exception:
         if not create:
             return None
         try:
-            return ws.spreadsheet.add_worksheet("injury_model", rows=5, cols=2)
+            return ws.spreadsheet.add_worksheet(_tab("injury_model"), rows=5, cols=2)
         except Exception:
             return None
 
@@ -2498,12 +2514,12 @@ def _bt_ws(create=False):
     if ws is None:
         return None
     try:
-        return ws.spreadsheet.worksheet("backtest")
+        return ws.spreadsheet.worksheet(_tab("backtest"))
     except Exception:
         if not create:
             return None
         try:
-            return ws.spreadsheet.add_worksheet("backtest", rows=5, cols=3)
+            return ws.spreadsheet.add_worksheet(_tab("backtest"), rows=5, cols=3)
         except Exception:
             return None
 
