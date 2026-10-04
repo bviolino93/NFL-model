@@ -1385,6 +1385,10 @@ SD_TOTAL      = 13.35
 MODEL_WEIGHT  = 0.099
 # Totals can earn their own weight in the backtest; same as spreads until then.
 MODEL_WEIGHT_TOTAL = MODEL_WEIGHT
+# Totals keep the original weight by choice, even after a backtest is
+# adopted: the 2021-2025 backtest found no signal in the totals lean
+# (weight -0.011, t -0.12), and the card says so.
+TOTALS_WEIGHT_KEPT = MODEL_WEIGHT
 
 # Backtest verdict, stated up front and shown in the UI.
 BACKTEST_T    = 1.19
@@ -1416,6 +1420,19 @@ CONSENSUS_LABEL = "Consensus line @ -110"
 # in ten comes up empty; at 3 it is eleven plays, most of the board.
 MIN_GAP_PTS = 4.0
 
+# TIERS (v1.3), your call after the 2021-2025 backtest:
+#   OFFICIAL  positive expected value after the blend (unchanged).
+#   LEAN      shown as "Bet": a SPREAD where the model is LEAN_GAP_PTS+ off.
+#             In the backtest these covered 53.7% of 395 (break-even 52.4%);
+#             promising, not proven. Kept in its own ledger.
+#   WATCH     the secondary level: spreads WATCH_SPREAD_GAP+ off, and totals
+#             MIN_GAP_PTS+ off (totals stay watch-only: their 4+ leans went
+#             47.9% in the same backtest).
+LEAN_GAP_PTS = 4.0
+WATCH_SPREAD_GAP = 2.0
+BET_TIERS = ("OFFICIAL", "LEAN")
+SHOWN_TIERS = ("OFFICIAL", "LEAN", "WATCH")
+
 # TIERS (v1.2):
 #   OFFICIAL  expected value >= MIN_EV at the price you will actually get.
 #             With the 0.099 blend a spread needs roughly 8 points of raw
@@ -1434,7 +1451,8 @@ MODEL_VERSION_BASE = (f"1.2.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT}"
 def model_version():
     """Threshold is part of the version: change the bar and the record it
     produces is no longer comparable with what came before."""
-    v = f"{MODEL_VERSION_BASE}-ev{MIN_EV:g}-g{MIN_GAP_PTS:g}"
+    v = (f"{MODEL_VERSION_BASE}-ev{MIN_EV:g}-g{MIN_GAP_PTS:g}"
+         f"-L{LEAN_GAP_PTS:g}w{WATCH_SPREAD_GAP:g}")
     # The injury adjustment changes the model line, so bets frozen with it
     # on are tagged and can be scored separately from those without.
     if load_injury_adjustment():
@@ -2590,7 +2608,7 @@ def adopt_weights(res):
     half would mean trusting it over the market on a few seasons of data."""
     v = res["variants"]["new"]
     w_s = float(np.clip(v["spread"]["weight"], 0.0, 0.5))
-    w_t = float(np.clip(v.get("total", {}).get("weight", w_s), 0.0, 0.5))
+    w_t = TOTALS_WEIGHT_KEPT   # totals are not changed by adopting
     a = {"spread": round(w_s, 4), "total": round(w_t, 4),
          "t_spread": v["spread"]["t"], "t_total": v.get("total", {}).get("t"),
          "n": v["spread"]["n"], "from": res["created_at"],
@@ -2864,15 +2882,24 @@ def expected_qbs(season, week, team):
     def _find(gid, nm):
         if gid and gid in R.index:
             return gid
+        # Name fallback, play-by-play style ("J.Daniels"). Initial + surname
+        # is ambiguous -- Jalon Daniels (TB rookie) and Jayden Daniels (WAS)
+        # are both "J.Daniels" -- so a match must also have played for THIS
+        # team. No match means a QB with no NFL film: rated by draft slot.
         sk = _short_key(nm)
-        hit = [i for i, n in zip(R.index, R["name"]) if name_key(n) == sk] \
-            if len(R) else []
-        return hit[0] if hit else None
+        if not len(R):
+            return None
+        hit = [i for i, n, t in zip(R.index, R["name"], R["team"])
+               if name_key(n) == sk and canon(t) == team]
+        return hit[0] if len(hit) == 1 else None
 
-    def _rate(qid):
+    def _rate(qid, nm=None):
         if qid is not None and qid in R.index:
             return float(R.loc[qid, "rating"])
-        return qb_rating_of("late", q)
+        # No NFL plays: rate by draft slot if we know it, else undrafted.
+        d = _qb_draft()
+        b = d.get("name:" + name_key(nm)) if nm else None
+        return qb_rating_of(b or "late", q)
 
     # Usual starter: most dropbacks for this team THIS season before this
     # week. Week 1 compares with last season's starter. If this season's
@@ -2912,7 +2939,7 @@ def expected_qbs(season, week, team):
         starter_name, source = "unknown backup", "replacement level"
 
     return {"team": team, "starter_id": starter_id, "starter": starter_name,
-            "rating": _rate(starter_id), "source": source,
+            "rating": _rate(starter_id, starter_name), "source": source,
             "usual_id": usual_id, "usual": usual_name,
             "usual_rating": _rate(usual_id) if usual_id else None,
             "changed": bool(usual_id and starter_id != usual_id)}
@@ -3119,8 +3146,13 @@ def assign_tiers(card):
         {"OVER": 1.0, "UNDER": -1.0})
     conflict = (card["market_type"].astype(str).str.upper() == "TOTAL") \
         & pick_dir.notna() & (raw_dir != pick_dir)
-    tier = np.where(ev >= MIN_EV, "OFFICIAL",
-                    np.where((gap >= MIN_GAP_PTS) & ~conflict, "WATCH", None))
+    is_sp = card["market_type"].astype(str).str.upper() == "SPREAD"
+    tier = np.where(
+        ev >= MIN_EV, "OFFICIAL",
+        np.where(is_sp & (gap >= LEAN_GAP_PTS), "LEAN",
+                 np.where((is_sp & (gap >= WATCH_SPREAD_GAP))
+                          | (~is_sp & (gap >= MIN_GAP_PTS) & ~conflict),
+                          "WATCH", None)))
     return card.assign(gap_pts=gap, bet_tier=tier)
 
 
@@ -3302,7 +3334,7 @@ def build_card(sched, season, week, sign, offers=None):
     card = assign_tiers(card)
     # Qualifying rows first, then by disagreement.
     card["_tier_rank"] = card["bet_tier"].map(
-        {"OFFICIAL": 0, "WATCH": 1}).fillna(2)
+        {"OFFICIAL": 0, "LEAN": 1, "WATCH": 2}).fillna(3)
     card = card.sort_values(["_tier_rank", "abs_edge"],
                             ascending=[True, False]).drop(columns="_tier_rank")
     return card.reset_index(drop=True), rt
@@ -3316,12 +3348,13 @@ def freeze(card, tracker):
     existing = set(tracker["record_key"].astype(str)) if not tracker.empty else set()
     # Base keys already logged in EITHER ledger. Without this, a market frozen
     # as WATCH on Wednesday and OFFICIAL on Sunday is counted twice.
-    existing_base = {k[:-2] if k.endswith("|W") else k for k in existing}
-    card = card[card["bet_tier"].isin(["OFFICIAL", "WATCH"])]
+    existing_base = {k[:-2] if (k.endswith("|W") or k.endswith("|L")) else k
+                     for k in existing}
+    card = card[card["bet_tier"].isin(list(SHOWN_TIERS))]
     new = []
     for _, r in card.iterrows():
         base = f"{r['game_id']}|{r['market_type']}"
-        key = base + ("" if r["bet_tier"] == "OFFICIAL" else "|W")
+        key = base + {"OFFICIAL": "", "LEAN": "|L"}.get(r["bet_tier"], "|W")
         if base in existing_base:
             continue
         row = {c: None for c in TRACKER_COLS}
@@ -4088,7 +4121,7 @@ except Exception:
     _AW = None
 if _AW and not _AW.get("reverted") and "spread" in _AW:
     MODEL_WEIGHT = float(_AW["spread"])
-    MODEL_WEIGHT_TOTAL = float(_AW["total"])
+    MODEL_WEIGHT_TOTAL = TOTALS_WEIGHT_KEPT
     BACKTEST_T = float(_AW.get("t_spread") or 0.0)
     BACKTEST_N = int(_AW.get("n") or 0)
     MODEL_VERSION_BASE = (f"1.3.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT:g}"
@@ -4096,12 +4129,14 @@ if _AW and not _AW.get("reverted") and "spread" in _AW:
     BT_SUMMARY = (
         f"Out-of-sample backtest ({_AW['test_seasons'][0]}\u2013"
         f"{_AW['test_seasons'][1]}, {BACKTEST_N:,} games): the model earned a "
-        f"weight of {MODEL_WEIGHT:g} on spreads (t = {BACKTEST_T:+.2f}) and "
-        f"{MODEL_WEIGHT_TOTAL:g} on totals"
+        f"weight of {MODEL_WEIGHT:g} on spreads (t = {BACKTEST_T:+.2f}); "
+        + ("that clears the usual bar for a real effect. "
+           if BACKTEST_T >= 2 else
+           "not yet distinguishable from no edge. ")
+        + f"Totals stay at {MODEL_WEIGHT_TOTAL:g} by choice, though the "
+          f"backtest found no signal in the model's totals lean"
         + (f" (t = {float(_AW['t_total']):+.2f})" if _AW.get("t_total") is not None else "")
-        + ". " + ("That clears the usual bar for a real effect."
-                  if BACKTEST_T >= 2 else
-                  "That is not yet distinguishable from no edge."))
+        + "; weather adjustments did test well.")
 else:
     _AW = None
     BT_SUMMARY = (
@@ -4273,7 +4308,7 @@ with tab_slate:
             """
             if df.empty:
                 return [], 0
-            d = df[df["bet_tier"].isin(["OFFICIAL", "WATCH"])]
+            d = df[df["bet_tier"].isin(list(SHOWN_TIERS))]
             return list(d.iterrows()), len(d)
 
         _sp, _nsp = _rows(card[card["market_type"] == "SPREAD"])
@@ -4298,7 +4333,8 @@ with tab_slate:
         _h = [f'<div class="sc-wrap">'
               f'<div class="sc-top"><h2>Top picks</h2>'
               f'<span>{_html.escape(_kick)} \u00b7 {_n} plays \u00b7 '
-              f'bets beat the vig \u00b7 watch = {MIN_GAP_PTS:g}+ pts off'
+              f'bet = beats the vig or spread {LEAN_GAP_PTS:g}+ off \u00b7 '
+              f'watch = spread {WATCH_SPREAD_GAP:g}+ / total {MIN_GAP_PTS:g}+ off'
               f'</span></div>']
 
         # Say what the quarterback adjustment did. If it is not applied, say
@@ -4449,8 +4485,8 @@ with tab_slate:
                     kick = pd.to_datetime(kick).strftime("%-I:%M %p")
                 except Exception:
                     pass
-                _tag = ("" if r.get("bet_tier") == "OFFICIAL"
-                        else "Watch \u00b7 ")
+                _tag = {"OFFICIAL": "", "LEAN": "Bet \u00b7 "}.get(
+                    r.get("bet_tier"), "Watch \u00b7 ")
                 _h.append(
                     f'<div class="sc-row"><div class="sc-rank">{i}</div>'
                     f'<div class="sc-main"><b>{_html.escape(_tag + str(r["pick_label"]))}</b>'
@@ -4473,18 +4509,19 @@ with tab_slate:
 
         _h.append(
             f'<div class="sc-foot">Sunday Edge \u00b7 every market where the '
-            f'model sits {MIN_GAP_PTS:g}+ points off the line, ranked.'
+            f'model disagrees with the line, ranked: bets first, then the '
+            f'watch list.'
             f'</div></div>')
         st.markdown("".join(_h), unsafe_allow_html=True)
 
-        _bets = (card[card["bet_tier"].isin(["OFFICIAL", "WATCH"])]
+        _bets = (card[card["bet_tier"].isin(list(SHOWN_TIERS))]
                  if not card.empty else card)
         with st.expander("Detail"):
             for _, r in (_sp + _to):
-                render_row(r, "Bet" if r.get("bet_tier") == "OFFICIAL"
+                render_row(r, "Bet" if r.get("bet_tier") in BET_TIERS
                            else "Watch")
 
-        _n_off = int((_bets["bet_tier"] == "OFFICIAL").sum()) if len(_bets) else 0
+        _n_off = int(_bets["bet_tier"].isin(list(BET_TIERS)).sum()) if len(_bets) else 0
         if not _bets.empty and st.button(
                 f"Freeze card ({_n_off} bets, {len(_bets) - _n_off} watch)",
                 use_container_width=True):
@@ -4547,9 +4584,21 @@ with tab_game:
                         f"{'Over' if model > mkt else 'Under'}, but the wind "
                         f"forecast outweighs it and tips the number to "
                         f"{lean.split()[0]} \u2014 the two cancel out.")
-            elif _gap >= MIN_GAP_PTS:
-                st.warning(f"**Watch {lean}** \u2014 big disagreement, but "
-                           f"the edge does not beat the vig.")
+            elif unit != "total" and _gap >= LEAN_GAP_PTS:
+                _ev = ""
+                try:
+                    _a4 = backtest_result()["variants"]["new"]["spread"]["ats"]["4+"]
+                    _ev = (f" In the 2021\u20132025 backtest, spreads this far "
+                           f"off covered {_a4['win']:.1%} of {_a4['n']}.")
+                except Exception:
+                    pass
+                st.success(f"**Bet {lean}** \u2014 the model is "
+                           f"{_gap:.1f} points off the line.{_ev} Promising, "
+                           f"not proven: small, flat stakes.")
+            elif (unit != "total" and _gap >= WATCH_SPREAD_GAP) or (
+                    unit == "total" and _gap >= MIN_GAP_PTS):
+                st.warning(f"**Watch {lean}** \u2014 the model disagrees, "
+                           f"but not enough to bet.")
             else:
                 st.info("**Don't bet.**")
             # Say it in words. The model works in margins (positive = home
@@ -4695,7 +4744,9 @@ with tab_tracker:
     # THE question: are these picks on the right side more than 52.4% of
     # the time? Reported with its own error bar, because a hit rate from a
     # small number of bets is not an answer.
-    _g = tr[tr["result"].isin(["WIN", "LOSS"])] if not tr.empty else tr
+    # Bets only: the watch list is not money and should not move this.
+    _g = (tr[tr["result"].isin(["WIN", "LOSS"])
+             & tr["bet_tier"].isin(list(BET_TIERS))] if not tr.empty else tr)
     if len(_g):
         _w = int((_g["result"] == "WIN").sum())
         _n = len(_g)
@@ -4771,10 +4822,14 @@ with tab_tracker:
     if tr.empty:
         st.info("No bets frozen yet.")
     else:
-        for tier in ["OFFICIAL", "WATCH"]:
+        for tier in ["OFFICIAL", "LEAN", "WATCH"]:
             sub = tr[tr["bet_tier"] == tier]
+            if tier == "LEAN" and sub.empty:
+                continue
             s = summarize(sub)
-            st.markdown(f'<div class="se-sec">{tier} LEDGER</div>',
+            _tl = {"OFFICIAL": "OFFICIAL", "LEAN": f"BET \u00b7 SPREAD "
+                   f"{LEAN_GAP_PTS:g}+ OFF", "WATCH": "WATCH"}[tier]
+            st.markdown(f'<div class="se-sec">{_tl} LEDGER</div>',
                          unsafe_allow_html=True)
             st.markdown(
                 stat_strip([
@@ -4963,7 +5018,7 @@ with tab_tracker:
                            f"{MODEL_WEIGHT_TOTAL:g}.")
             if is_owner() and _nv.get("spread"):
                 _ca, _cb = st.columns(2)
-                if _ca.button("Use these weights", key="bt_adopt"):
+                if _ca.button("Use spread weight", key="bt_adopt"):
                     adopt_weights(_br)
                     _bt_saved.clear()
                     st.rerun()
