@@ -25,7 +25,12 @@ warnings.filterwarnings("ignore")
 import html as _html
 import json
 import math
+import threading
 from datetime import datetime, timezone
+
+# Backtest override. A backtest runs in its own thread and swaps in its own
+# measurement and ramp through this; everyone else's session is untouched.
+_BT = threading.local()
 
 import numpy as np
 import pandas as pd
@@ -225,6 +230,17 @@ def _player_share(snaps, season, week, team_games_col="team"):
         n = last.set_index("key")["n_thru"]
         tot = df.groupby("key")["share"].sum()
         n = n.reindex(tot.index).fillna(1.0).clip(lower=1)
+        # The game a player got hurt in is usually a partial game (Dart: 7
+        # snaps). If his latest game is under half his usual share, drop it,
+        # so the injury itself does not understate his role.
+        srt = df.sort_values("week")
+        g_ = srt.groupby("key")["share"]
+        cnt = g_.size()
+        lst = g_.last()
+        mean_other = ((tot - lst) / (cnt - 1).clip(lower=1))
+        drop = (cnt >= 2) & (lst < 0.5 * mean_other)
+        tot = tot - lst.where(drop, 0.0)
+        n = (n - drop.astype(float)).clip(lower=1)
         return tot, n
 
     s_cur, n_cur = _shares(cur)
@@ -548,7 +564,7 @@ def measure(seasons=None, nfl=None, log=print):
     bt, set_, sdt = _fit(Xt, g["total"].values.astype(float), 4)
 
     out = {
-        "version": 5,
+        "version": 6,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "seasons": [seasons[0], seasons[-1]],
         "n_games": n,
@@ -982,6 +998,7 @@ def load_pbp(nfl, seasons):
 WX_MIN_T = 2.0
 WX_FORECAST_DISCOUNT = 0.40   # same haircut the wind effect earned
 WX_COLD_BELOW_F = 40.0
+WX_WIND_FROM = 8.0            # mph; wind below this is treated as calm
 WX_HOURS = 4                  # kickoff hour plus the next three
 WX_FEATURES = ("wind", "rain", "cold", "snow")
 WX_SIGN = {"wind": -1, "rain": -1, "cold": -1, "snow": -1}
@@ -1103,7 +1120,10 @@ def wx_vector(f):
     """The regression features from window features (zeros indoors)."""
     if not f:
         return {k_: 0.0 for k_ in WX_FEATURES}
-    return {"wind": float(f["wind"] or 0.0),
+    # Wind counts only above WX_WIND_FROM mph, like the original rule: a light
+    # breeze does nothing to scoring, and a line through zero let wind stand
+    # in for "played outdoors" and trim every outdoor total.
+    return {"wind": float(max(0.0, (f["wind"] or 0.0) - WX_WIND_FROM)),
             "rain": float(min(f.get("precip") or 0.0, 0.75)),
             "cold": float(max(0.0, WX_COLD_BELOW_F - f["temp"]))
                     if f.get("temp") is not None else 0.0,
@@ -1156,9 +1176,12 @@ def measure_weather(sched, seasons, log=print):
         g[c_] = g[c_].map(canon)
     total = (g["home_score"] + g["away_score"]).values.astype(float)
     cols = list(WX_FEATURES)
-    Xw = V[cols].values
+    # Outdoors as its own control, so no weather term absorbs the plain
+    # difference between dome and open-air scoring. Not applied to lines.
+    outd = (g["wx_status"] == "outdoor").values.astype(float)[:, None]
+    Xw = np.hstack([V[cols].values, outd])
     one = np.ones((len(g), 1))
-    b, se, _ = _fit(np.hstack([Xw, one, _fe(g, True)]), total, len(cols) + 1)
+    b, se, _ = _fit(np.hstack([Xw, one, _fe(g, True)]), total, len(cols) + 2)
     value = {c_: _stat(b[i], se[i]) for i, c_ in enumerate(cols)}
     market = {}
     if "total_line" in g.columns:
@@ -1168,6 +1191,7 @@ def measure_weather(sched, seasons, log=print):
             bm, sem = _ols(np.hstack([Xw[m], one[m]]), err)
             market = {c_: _stat(bm[i], sem[i]) for i, c_ in enumerate(cols)}
     out = {"value": value, "market": market, "n_games": int(len(g)),
+           "wind_from_mph": WX_WIND_FROM,
            "n_outdoor": int((g["wx_status"] == "outdoor").sum()),
            "mean": {c_: round(float(V.loc[g["wx_status"] == "outdoor", c_].mean()), 3)
                     for c_ in cols}}
@@ -1231,7 +1255,18 @@ def wx_describe(feat, status, where=""):
 
 # Part of every injury cache key: when the position groups change, anything
 # Streamlit cached under the old groups is ignored instead of reused.
-INJ_SCHEMA = "v5:" + ",".join(GROUPS)
+INJ_SCHEMA = "v6:" + ",".join(GROUPS)
+
+
+def _schema():
+    """Cache key for anything computed WITH the measurement: changes when the
+    measurement does, so a new measurement (or a backtest's) never reuses
+    numbers cached under another one."""
+    try:
+        a = load_injury_adjustment()
+    except Exception:
+        a = None
+    return INJ_SCHEMA + ":" + str((a or {}).get("created_at", "none"))
 
 inj_mod = types.SimpleNamespace(
     GROUPS=GROUPS, GROUP_LABEL=GROUP_LABEL, usable=usable,
@@ -1348,6 +1383,8 @@ SD_TOTAL      = 13.35
 # backtest regression: market 1.011, model 0.099. The model gets 0.099
 # because that is what it earned, not because it feels too low.
 MODEL_WEIGHT  = 0.099
+# Totals can earn their own weight in the backtest; same as spreads until then.
+MODEL_WEIGHT_TOTAL = MODEL_WEIGHT
 
 # Backtest verdict, stated up front and shown in the UI.
 BACKTEST_T    = 1.19
@@ -2092,8 +2129,12 @@ def build_ratings(sched, season, week):
                            min_games=16)
     # Front-loaded ramp: half weight after two weeks (32 games), full weight
     # at IN_SEASON_FULL_GAMES. Was linear to 160 games (20% at week 3).
-    w = (min(1.0, math.sqrt(len(in_season) / IN_SEASON_FULL_GAMES))
-         if r_cur is not None else 0.0)
+    if getattr(_BT, "ramp", "sqrt") == "linear":
+        # The original ramp, kept for the backtest comparison.
+        w = min(1.0, len(in_season) / 160.0) if r_cur is not None else 0.0
+    else:
+        w = (min(1.0, math.sqrt(len(in_season) / IN_SEASON_FULL_GAMES))
+             if r_cur is not None else 0.0)
 
     def _blend(cur, allr):
         """Same treatment for both markets. Team ratings are deviations
@@ -2148,7 +2189,7 @@ def _valid_injury_adj(d):
         # v2 added quarterbacks, v3 injured reserve, v4 locked snap shares
         # and individual QB ratings, v5 weather; older copies re-measure.
         return (isinstance(d, dict) and isinstance(d.get("margin"), dict)
-                and "QB" in d["margin"] and int(d.get("version", 1)) >= 5
+                and "QB" in d["margin"] and int(d.get("version", 1)) >= 6
                 and int(d.get("n_games", 0)) >= 500)
     except Exception:
         return False
@@ -2268,6 +2309,8 @@ def load_injury_adjustment():
     app keeps working with the newest saved copy (or none) until it lands.
     Nothing here ever makes a visitor wait.
     """
+    if getattr(_BT, "active", False):
+        return _BT.adj
     try:
         with open("injury_adjustment.json") as fh:
             d = json.load(fh)
@@ -2304,6 +2347,256 @@ def measurement_status():
     if job.get("started"):
         mins = (datetime.now(timezone.utc) - job["started"]).total_seconds() / 60
     return _job_running(), mins, job.get("step", ""), job.get("error")
+
+
+# ----------------------------------------------------------------------
+# Backtest of the current model, out of sample
+# ----------------------------------------------------------------------
+BT_TEST_YEARS = 5      # the most recent completed seasons are the test set
+
+
+def _bt_prep_sched(seasons):
+    df = nfl.import_schedules(list(seasons))
+    keep = ["game_id", "season", "week", "gameday", "gametime", "home_team",
+            "away_team", "home_score", "away_score", "spread_line",
+            "total_line", "roof", "location", "stadium"]
+    return df[[c for c in keep if c in df.columns]].copy()
+
+
+def _bt_stats(df):
+    """The blend weight each version earned, with its t-stat, and how often
+    its side covered when it disagreed with the close."""
+    out = {}
+    d = df.dropna(subset=["mkt_m", "raw_m", "margin"])
+    x = (d["raw_m"] - d["mkt_m"]).values
+    y = (d["margin"] - d["mkt_m"]).values
+    if len(d) > 50 and (x * x).sum() > 0:
+        b = float((x * y).sum() / (x * x).sum())
+        se = float(np.sqrt(np.var(y - b * x) / (x * x).sum()))
+        ats = {}
+        for thr in (2.0, 4.0):
+            m = (np.abs(x) >= thr) & (y != 0)
+            if m.sum():
+                ats[f"{thr:g}+"] = {"n": int(m.sum()), "win": round(float(
+                    (np.sign(x[m]) == np.sign(y[m])).mean()), 4)}
+        out["spread"] = {"n": int(len(d)), "weight": round(b, 4),
+                         "t": round(b / se, 2) if se > 0 else 0.0, "ats": ats}
+        # Split the disagreement: power ratings vs injuries/QBs. Which part
+        # carries information the closing line did not have?
+        if "pers_m" in d.columns and np.abs(d["pers_m"].fillna(0)).sum() > 0:
+            pm = d["pers_m"].fillna(0.0).values
+            X = np.column_stack([x - pm, pm])
+            bb, *_r = np.linalg.lstsq(X, y, rcond=None)
+            cv = np.var(y - X @ bb) * np.linalg.pinv(X.T @ X)
+            sd = np.sqrt(np.clip(np.diag(cv), 1e-12, None))
+            out["spread"]["parts"] = {
+                "ratings": {"weight": round(float(bb[0]), 4),
+                            "t": round(float(bb[0] / sd[0]), 2)},
+                "personnel": {"weight": round(float(bb[1]), 4),
+                              "t": round(float(bb[1] / sd[1]), 2)}}
+    d = df.dropna(subset=["mt", "raw_t", "total"])
+    if len(d) > 50:
+        x1 = (d["raw_t"] - d["mt"]).values
+        x2 = d["wx_fair"].fillna(0.0).values
+        y = (d["total"] - d["mt"]).values
+        X = np.column_stack([x1, x2]) if np.abs(x2).sum() > 0 else x1[:, None]
+        beta, *_r = np.linalg.lstsq(X, y, rcond=None)
+        res = y - X @ beta
+        cov = np.var(res) * np.linalg.pinv(X.T @ X)
+        se = np.sqrt(np.clip(np.diag(cov), 1e-12, None))
+        ats = {}
+        for thr in (2.0, 4.0):
+            m = (np.abs(x1) >= thr) & (y != 0)
+            if m.sum():
+                ats[f"{thr:g}+"] = {"n": int(m.sum()), "win": round(float(
+                    (np.sign(x1[m]) == np.sign(y[m])).mean()), 4)}
+        out["total"] = {"n": int(len(d)), "weight": round(float(beta[0]), 4),
+                        "t": round(float(beta[0] / se[0]), 2), "ats": ats}
+        if X.shape[1] > 1:
+            out["total"]["weather_mult"] = round(float(beta[1]), 3)
+            out["total"]["weather_t"] = round(float(beta[1] / se[1]), 2)
+    return out
+
+
+def run_backtest(log=print):
+    """
+    Measure injuries, QBs and weather on the seasons BEFORE the test set,
+    then price every test-set game week by week using only what was known
+    before it, three ways:
+      new          everything on, current (fast) in-season ramp
+      new_oldramp  everything on, the original linear ramp
+      old          nothing new: power ratings, home field, wind rule
+    """
+    last = datetime.now().year - 1
+    test = list(range(last - BT_TEST_YEARS + 1, last + 1))
+    train = list(range(2013, test[0]))
+    log(f"Measuring on {train[0]}-{train[-1]} only (out of sample)...")
+    adj_bt = inj_mod.measure(seasons=train, nfl=nfl, log=log)
+    adj_bt["created_at"] = "bt-" + adj_bt.get("created_at", "")
+    sched = _bt_prep_sched(range(test[0] - 2, last + 1))
+    sgn = line_sign(sched)
+    variants = [("new", adj_bt, "sqrt"), ("new_oldramp", adj_bt, "linear"),
+                ("old", None, "linear")]
+    weeks = (sched[sched["season"].isin(test)]
+             .dropna(subset=["home_score", "away_score"])[["season", "week"]]
+             .drop_duplicates().sort_values(["season", "week"]).values)
+    results = {}
+    try:
+        for name, adj_v, ramp in variants:
+            _BT.active, _BT.adj, _BT.ramp = True, adj_v, ramp
+            rows = []
+            for i, (s_, w_) in enumerate(weeks):
+                s_, w_ = int(s_), int(w_)
+                if i % 10 == 0:
+                    log(f"{name}: {s_} week {w_} ({i + 1}/{len(weeks)})")
+                rt = build_ratings(sched, s_, w_)
+                if rt is None:
+                    continue
+                gw = sched[(sched["season"] == s_) & (sched["week"] == w_)]
+                for _, g in gw.iterrows():
+                    h, a = g["home_team"], g["away_team"]
+                    if pd.isna(g.get("home_score")) or h not in rt["margin"] \
+                            or a not in rt["margin"]:
+                        continue
+                    try:
+                        im, it, _n, _d = injury_delta(s_, w_, h, a)
+                    except Exception:
+                        im, it = 0.0, 0.0
+                    try:
+                        wx = game_wx(g)
+                    except Exception:
+                        wx = {"raw_adj": 0.0, "fair_adj": 0.0}
+                    raw_m = (rt["margin"][h] - rt["margin"][a]
+                             + home_field(g, rt) + im)
+                    raw_t = None
+                    if rt.get("total"):
+                        raw_t = (rt["total"].get(h, 0.0) + rt["total"].get(a, 0.0)
+                                 + rt["tbase"] + it + wx["raw_adj"])
+                    rows.append({
+                        "season": s_, "week": w_,
+                        "margin": float(g["home_score"] - g["away_score"]),
+                        "total": float(g["home_score"] + g["away_score"]),
+                        "mkt_m": (sgn * float(g["spread_line"])
+                                  if pd.notna(g.get("spread_line")) else np.nan),
+                        "mt": (float(g["total_line"])
+                               if pd.notna(g.get("total_line")) else np.nan),
+                        "raw_m": raw_m, "pers_m": im,
+                        "pers_t": it + wx["raw_adj"],
+                        "raw_t": raw_t if raw_t is not None else np.nan,
+                        "wx_fair": wx["fair_adj"]})
+            results[name] = _bt_stats(pd.DataFrame(rows))
+            log(f"{name}: {results[name]}")
+    finally:
+        _BT.active, _BT.adj, _BT.ramp = False, None, "sqrt"
+    return {"created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "test_seasons": [test[0], test[-1]], "train_seasons": [train[0], train[-1]],
+            "variants": results}
+
+
+def _bt_ws(create=False):
+    ws = _sheet()
+    if ws is None:
+        return None
+    try:
+        return ws.spreadsheet.worksheet("backtest")
+    except Exception:
+        if not create:
+            return None
+        try:
+            return ws.spreadsheet.add_worksheet("backtest", rows=5, cols=3)
+        except Exception:
+            return None
+
+
+@st.cache_resource(show_spinner=False)
+def _bt_job():
+    return {"thread": None, "result": None, "error": None, "started": None,
+            "step": "", "adopted": None}
+
+
+def bt_running():
+    t = _bt_job()["thread"]
+    return bool(t is not None and t.is_alive())
+
+
+def start_backtest():
+    job = _bt_job()
+    if bt_running():
+        return
+    def _run():
+        try:
+            res = run_backtest(log=lambda m: job.__setitem__("step", str(m)[:160]))
+            job["result"], job["error"] = res, None
+            ws = _bt_ws(create=True)
+            if ws is not None:
+                try:
+                    ws.update_acell("A1", json.dumps(res))
+                except Exception:
+                    pass
+        except Exception as e:
+            job["error"] = f"{type(e).__name__}: {e}"
+    job.update(started=datetime.now(timezone.utc), error=None, step="starting")
+    t = threading.Thread(target=_run, daemon=True)
+    job["thread"] = t
+    t.start()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _bt_saved(_stamp=0):
+    """(latest backtest result, adopted weights) from the Sheet."""
+    ws = _bt_ws()
+    res, adopted = None, None
+    if ws is not None:
+        try:
+            res = json.loads(ws.acell("A1").value or "null")
+        except Exception:
+            res = None
+        try:
+            adopted = json.loads(ws.acell("B1").value or "null")
+        except Exception:
+            adopted = None
+    return res, adopted
+
+
+def backtest_result():
+    job = _bt_job()
+    return job["result"] or _bt_saved(st.session_state.get("bt_stamp", 0))[0]
+
+
+def adopted_weights():
+    job = _bt_job()
+    return job.get("adopted") or _bt_saved(st.session_state.get("bt_stamp", 0))[1]
+
+
+def adopt_weights(res):
+    """Switch the live model to the weights the backtest earned. Clipped to
+    [0, 0.5]: a negative weight means 'ignore the model', and anything above
+    half would mean trusting it over the market on a few seasons of data."""
+    v = res["variants"]["new"]
+    w_s = float(np.clip(v["spread"]["weight"], 0.0, 0.5))
+    w_t = float(np.clip(v.get("total", {}).get("weight", w_s), 0.0, 0.5))
+    a = {"spread": round(w_s, 4), "total": round(w_t, 4),
+         "t_spread": v["spread"]["t"], "t_total": v.get("total", {}).get("t"),
+         "n": v["spread"]["n"], "from": res["created_at"],
+         "test_seasons": res["test_seasons"]}
+    _bt_job()["adopted"] = a
+    ws = _bt_ws(create=True)
+    if ws is not None:
+        try:
+            ws.update_acell("B1", json.dumps(a))
+        except Exception:
+            pass
+    return a
+
+
+def revert_weights():
+    _bt_job()["adopted"] = {"reverted": True}
+    ws = _bt_ws(create=True)
+    if ws is not None:
+        try:
+            ws.update_acell("B1", json.dumps({"reverted": True}))
+        except Exception:
+            pass
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -2547,7 +2840,7 @@ def expected_qbs(season, week, team):
     q = qb_params()
     if not q:
         return None
-    R = qb_ratings_now(season, week, INJ_SCHEMA)
+    R = qb_ratings_now(season, week, _schema())
     db = _qb_db(season)
     team = canon(team)
     out_keys = _unavailable(season, week, team)
@@ -2670,7 +2963,7 @@ def qb_history_offsets(games):
     ref = float(q["ref"])
     k = float(q["margin"]["coef"])
     kt = float(q["total"]["coef"]) if qb_usable(q, "total") else 0.0
-    T = pd.concat([qb_history_table(int(s_), INJ_SCHEMA) for s_ in
+    T = pd.concat([qb_history_table(int(s_), _schema()) for s_ in
                    sorted(pd.to_numeric(games["season"]).unique())],
                   ignore_index=True)
     if T.empty:
@@ -2695,7 +2988,7 @@ def injury_history_offsets(games):
     if not adj or games.empty:
         return z, z.copy()
     mp = tuple(sorted((adj.get("miss_prob") or {}).items()))
-    tables = [season_injury_table(int(s_), mp, INJ_SCHEMA)
+    tables = [season_injury_table(int(s_), mp, _schema())
               for s_ in sorted(pd.to_numeric(games["season"]).unique())]
     table = pd.concat(tables, ignore_index=True) if tables else None
     om, ot = inj_mod.history_offsets(adj, table, games, min_t=INJ_MIN_T,
@@ -2714,7 +3007,7 @@ def injury_delta(season, week, h, a):
     adj = load_injury_adjustment()
     if not adj:
         return 0.0, 0.0, None, {}
-    loads, _ = injury_loads(season, week, INJ_SCHEMA)
+    loads, _ = injury_loads(season, week, _schema())
     dm, dt, note, det = inj_mod.game_deltas(adj, loads, h, a, min_t=INJ_MIN_T,
                                             cap=INJ_MAX_PTS,
                                             skip_qb=_skip_inj_qb())
@@ -2916,7 +3209,7 @@ def build_card(sched, season, week, sign, offers=None):
             _wx = game_wx(g)
             raw_total += _wx["raw_adj"]
             _mph, _wadj = _wx["wind"], _wx["fair_adj"]
-            fair_t = mt + MODEL_WEIGHT * (raw_total - mt) + _wadj
+            fair_t = mt + MODEL_WEIGHT_TOTAL * (raw_total - mt) + _wadj
             cands = [(nm, ("OVER_LIKE" if nm == "OVER" else "UNDER_LIKE"),
                       p, pr, bk)
                      for nm, p, pr, bk in live["totals"]]
@@ -2948,7 +3241,7 @@ def build_card(sched, season, week, sign, offers=None):
             _wx = game_wx(g)
             raw_total += _wx["raw_adj"]
             _mph, _wadj = _wx["wind"], _wx["fair_adj"]
-            fair_t = mt + MODEL_WEIGHT * (raw_total - mt) + _wadj
+            fair_t = mt + MODEL_WEIGHT_TOTAL * (raw_total - mt) + _wadj
             edge_t = fair_t - mt
             side = "OVER" if edge_t > 0 else "UNDER"
             p = norm_cdf(abs(edge_t) / SD_TOTAL)
@@ -3761,7 +4054,7 @@ def render_row(r, badge):
          <span class="k">Value</span></div>
   </div>
   <div class="se-note">Model is <b>{gap:.1f}</b> points off the market.
-    Weighted at {MODEL_WEIGHT}, that becomes <b>{abs(edge):.2f}</b> points of
+    Weighted at {(MODEL_WEIGHT_TOTAL if str(r.get("market_type", "")).upper() == "TOTAL" else MODEL_WEIGHT):g}, that becomes <b>{abs(edge):.2f}</b> points of
     edge &mdash; the weight this model earned against
     {BACKTEST_N:,} past games.{_inj_html}</div>
 </div>""", unsafe_allow_html=True)
@@ -3770,6 +4063,36 @@ def render_row(r, badge):
 # ----------------------------------------------------------------------
 # UI
 # ----------------------------------------------------------------------
+# Weights the out-of-sample backtest earned, once you have chosen to use them
+# (Tracker -> Backtest). Until then, the original backtest's 0.099.
+_AW = None
+try:
+    _AW = adopted_weights()
+except Exception:
+    _AW = None
+if _AW and not _AW.get("reverted") and "spread" in _AW:
+    MODEL_WEIGHT = float(_AW["spread"])
+    MODEL_WEIGHT_TOTAL = float(_AW["total"])
+    BACKTEST_T = float(_AW.get("t_spread") or 0.0)
+    BACKTEST_N = int(_AW.get("n") or 0)
+    MODEL_VERSION_BASE = (f"1.3.0-a{RIDGE_ALPHA}-w{MODEL_WEIGHT:g}"
+                          f"-wt{MODEL_WEIGHT_TOTAL:g}-r{IN_SEASON_FULL_GAMES}")
+    BT_SUMMARY = (
+        f"Out-of-sample backtest ({_AW['test_seasons'][0]}\u2013"
+        f"{_AW['test_seasons'][1]}, {BACKTEST_N:,} games): the model earned a "
+        f"weight of {MODEL_WEIGHT:g} on spreads (t = {BACKTEST_T:+.2f}) and "
+        f"{MODEL_WEIGHT_TOTAL:g} on totals"
+        + (f" (t = {float(_AW['t_total']):+.2f})" if _AW.get("t_total") is not None else "")
+        + ". " + ("That clears the usual bar for a real effect."
+                  if BACKTEST_T >= 2 else
+                  "That is not yet distinguishable from no edge."))
+else:
+    _AW = None
+    BT_SUMMARY = (
+        f"Backtested on {BACKTEST_N:,} games (2007-2025), the original model "
+        f"did NOT beat the closing line (coefficient +{MODEL_WEIGHT}, t = "
+        f"{BACKTEST_T:.2f}). The current model has not been backtested yet.")
+
 st.markdown(CARD_CSS, unsafe_allow_html=True)
 brand_header()
 st.caption(f"NFL spreads and totals · model {model_version()}")
@@ -3797,11 +4120,12 @@ elif not is_owner():
                 st.error("Incorrect code.")
 
 st.warning(
-    f"**This model did not beat the closing line in backtest.** Across "
-    f"{BACKTEST_N:,} games (2007-2025) it added no measurable information "
-    f"beyond the market (t = +{BACKTEST_T:.2f}). Picks below are the "
-    f"model's lean, not a demonstrated edge. The tracker is built to give "
-    f"you a real answer as the record accumulates."
+    (f"**{BT_SUMMARY}** " if _AW else
+     f"**This model did not beat the closing line in backtest.** Across "
+     f"{BACKTEST_N:,} games (2007-2025) it added no measurable information "
+     f"beyond the market (t = +{BACKTEST_T:.2f}). ")
+    + "Picks below are the model's lean, not a demonstrated edge. The "
+      "tracker is built to give you a real answer as the record accumulates."
 )
 
 c_ref, c_stamp = st.columns([1, 3])
@@ -4071,7 +4395,7 @@ with tab_slate:
                 f'({_html.escape(str(_why)[:120])}). It will retry next '
                 f'session.</div>')
         else:
-            _il, _ist = injury_loads(season, week, INJ_SCHEMA)
+            _il, _ist = injury_loads(season, week, _schema())
             if _ist != "ok":
                 _h.append(
                     f'<div class="sc-note warn">Injury adjustment is on, but '
@@ -4235,14 +4559,15 @@ with tab_game:
                     f'<tr><td>Cover probability</td><td>{p:.1%}</td></tr>'
                     f'<tr><td>Value at this price</td><td>{e:+.2%}</td></tr>'
                     '</table>', unsafe_allow_html=True)
+                _wt = MODEL_WEIGHT_TOTAL if unit == "total" else MODEL_WEIGHT
                 st.write(
                     f"The model line comes from the two power ratings plus "
                     f"home field, then blended toward the market at "
-                    f"{MODEL_WEIGHT} \u2014 the weight it earned in backtest:"
+                    f"{_wt:g} \u2014 the weight it earned in backtest:"
                 )
                 st.code(
-                    f"blended fair = {mkt:.2f} + {MODEL_WEIGHT} x "
-                    f"({model - mkt:+.2f}) = {mkt + MODEL_WEIGHT*(model-mkt):.2f}\n"
+                    f"blended fair = {mkt:.2f} + {_wt:g} x "
+                    f"({model - mkt:+.2f}) = {mkt + _wt*(model-mkt):.2f}\n"
                     f"edge         = {edge:+.2f} pts\n"
                     f"cover prob   = normal({abs(edge):.2f} / {sd}) = {p:.1%}",
                     language=None)
@@ -4273,7 +4598,8 @@ with tab_game:
         if _idet_g and (_idet_g.get("home") or _idet_g.get("away")):
             with st.expander("Injury report used"):
                 for _t, _side in ((a, "away"), (h, "home")):
-                    _pl = _idet_g.get(_side, {}).get("players", [])
+                    _pl = [p for p in _idet_g.get(_side, {}).get("players", [])
+                           if not (p["group"] == "QB" and _skip_inj_qb())]
                     if not _pl:
                         st.caption(f"{_t}: nobody of note listed.")
                         continue
@@ -4301,7 +4627,7 @@ with tab_game:
             raw_t = th + ta + rt_g["tbase"] + _it_g + _wx_g["raw_adj"]
             mt = float(row["total_line"])
             _wadj_g = _wx_g["fair_adj"]
-            edge_t = MODEL_WEIGHT * (raw_t - mt) + _wadj_g
+            edge_t = MODEL_WEIGHT_TOTAL * (raw_t - mt) + _wadj_g
             _wx_bits = []
             for _f, _pts, _how in _wx_g["parts"]:
                 _wx_bits.append(
@@ -4560,6 +4886,86 @@ with tab_tracker:
             start_measurement()
             st.rerun()
 
+    # Backtest: does the current model beat the closing line out of sample?
+    with st.expander("Backtest", expanded=False):
+        _br = backtest_result()
+        if bt_running():
+            _bj = _bt_job()
+            _bm = (datetime.now(timezone.utc) - _bj["started"]).total_seconds() / 60
+            st.caption(f"Running in the background ({_bm:.0f} min so far): "
+                       f"{_bj['step']}. Usually 20\u201340 minutes.")
+        elif _bt_job().get("error"):
+            st.caption(f"Last backtest failed: {_bt_job()['error'][:200]}")
+        if _br:
+            st.caption(
+                f"Measured on {_br['train_seasons'][0]}\u2013{_br['train_seasons'][1]}, "
+                f"tested week by week on {_br['test_seasons'][0]}\u2013"
+                f"{_br['test_seasons'][1]} using only what was known before "
+                f"each game. Weight = how much of the model's disagreement "
+                f"with the closing line actually showed up in results (0 = "
+                f"none, 1 = all of it). Run {_br['created_at'][:10]}.")
+            _lab = {"new": "Current model", "new_oldramp": "Current, old ramp",
+                    "old": "Original model"}
+            _rows = []
+            for _k in ("new", "new_oldramp", "old"):
+                _v = _br["variants"].get(_k, {})
+                _sp, _to = _v.get("spread", {}), _v.get("total", {})
+                _rows.append({
+                    "Version": _lab[_k],
+                    "Spread weight": _sp.get("weight"), "Spread t": _sp.get("t"),
+                    "ATS when 4+ off": (f"{_sp['ats']['4+']['win']:.1%} of "
+                                        f"{_sp['ats']['4+']['n']}"
+                                        if _sp.get("ats", {}).get("4+") else None),
+                    "Total weight": _to.get("weight"), "Total t": _to.get("t"),
+                    "O/U when 4+ off": (f"{_to['ats']['4+']['win']:.1%} of "
+                                        f"{_to['ats']['4+']['n']}"
+                                        if _to.get("ats", {}).get("4+") else None),
+                })
+            st.dataframe(pd.DataFrame(_rows), hide_index=True,
+                         use_container_width=True)
+            _nv = _br["variants"].get("new", {})
+            _pp = _nv.get("spread", {}).get("parts")
+            if _pp:
+                st.caption(
+                    f"Where the current model's spread signal comes from: "
+                    f"power ratings {_pp['ratings']['weight']:+.3f} "
+                    f"(t {_pp['ratings']['t']:+.2f}), injuries and QBs "
+                    f"{_pp['personnel']['weight']:+.3f} (t "
+                    f"{_pp['personnel']['t']:+.2f}). Near 0 = the closing line "
+                    f"already had it; near 1 = the market missed it entirely.")
+            if _nv.get("total", {}).get("weather_mult") is not None:
+                st.caption(
+                    f"Weather adjustments that move the number directly: "
+                    f"results bore out {_nv['total']['weather_mult']:.2f}x of "
+                    f"them (t = {_nv['total']['weather_t']:+.2f}; 1.0 = exactly "
+                    f"right). Backtest uses actual game weather, so this is "
+                    f"a best case.")
+            st.caption("Break-even at -110 is 52.4%. A t-stat under 2 means "
+                       "the result could easily be luck.")
+            if _AW:
+                st.caption(f"In use: spread weight {MODEL_WEIGHT:g}, totals "
+                           f"{MODEL_WEIGHT_TOTAL:g}.")
+            if is_owner() and _nv.get("spread"):
+                _ca, _cb = st.columns(2)
+                if _ca.button("Use these weights", key="bt_adopt"):
+                    adopt_weights(_br)
+                    _bt_saved.clear()
+                    st.rerun()
+                if _AW and _cb.button("Back to 0.099", key="bt_revert"):
+                    revert_weights()
+                    _bt_saved.clear()
+                    st.rerun()
+        elif not bt_running():
+            st.caption("Not run yet.")
+        if is_owner() and not bt_running() and _job_running():
+            st.caption("The weekly measurement is running; start the backtest "
+                       "after it finishes (both at once can exhaust memory).")
+        elif is_owner() and not bt_running():
+            if st.button("Run backtest" if not _br else "Run again",
+                         key="bt_run"):
+                start_backtest()
+                st.rerun()
+
 st.divider()
 st.markdown(
     '<div style="text-align:center;padding:8px 0 4px">'
@@ -4567,9 +4973,8 @@ st.markdown(
     'color:#61748C">SUNDAY <span style="color:#60A5FA">EDGE</span></div>'
     '<div style="font-size:.66rem;color:#61748C;margin-top:7px;'
     'line-height:1.6;max-width:34rem;margin-left:auto;margin-right:auto">'
-    'For entertainment and research. Backtested on 4,254 games this model '
-    'did NOT beat the closing line (coefficient +0.099, t = 1.19) \u2014 no '
-    'edge is claimed. 21+ where legal. If gambling stops being fun, call '
+    'For entertainment and research. ' + _html.escape(BT_SUMMARY) +
+    ' No edge is claimed. 21+ where legal. If gambling stops being fun, call '
     '1-800-GAMBLER or text 800GAM.'
     '</div></div>',
     unsafe_allow_html=True,
