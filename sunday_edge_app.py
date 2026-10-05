@@ -4744,134 +4744,166 @@ with tab_tracker:
     else:
         st.caption("Storage: Google Sheets \u2014 history is saved permanently.")
 
-    # THE question: are these picks on the right side more than 52.4% of
-    # the time? Reported with its own error bar, because a hit rate from a
-    # small number of bets is not an answer.
-    # Bets only: the watch list is not money and should not move this.
-    _g = (tr[tr["result"].isin(["WIN", "LOSS"])
-             & tr["bet_tier"].isin(list(BET_TIERS))] if not tr.empty else tr)
-    if len(_g):
-        _w = int((_g["result"] == "WIN").sum())
-        _n = len(_g)
-        _rate = _w / _n
-        _se = (0.25 / _n) ** 0.5
-        st.markdown('<div class="se-sec">RIGHT SIDE, HOW OFTEN?</div>',
-                    unsafe_allow_html=True)
-        _ci_svg = se_winrate_ci_svg(_w, _n - _w)
-        if _ci_svg:
-            st.markdown(f'<div class="se-curve">{_ci_svg}</div>',
-                        unsafe_allow_html=True)
-        _lo, _hi = _rate - 1.96 * _se, _rate + 1.96 * _se
-        # Status chip, matching the college app: a one-line verdict rather
-        # than three metric cards the reader has to compare themselves.
-        if _lo > 0.524:
-            _tone, _lab = "pos", "Beating the number"
-        elif _hi < 0.524:
-            _tone, _lab = "neg", "Below break-even"
-        else:
-            _tone, _lab = "wait", "Too early to call"
-        st.markdown(
-            f'<div class="se-verdict {_tone}"><span class="se-verdict-dot"></span>'
-            f'<b>{_lab}</b><em>{_n} graded</em></div>',
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"95% range given {_n} bets: {_lo:.1%} to {_hi:.1%}. "
-            + ("Breakeven sits inside that range, so this does not yet "
-               "distinguish a real edge from chance."
-               if _lo <= 0.524 <= _hi else
-               ("Breakeven is below the range \u2014 a real edge at this "
-                "sample size." if _lo > 0.524 else
-                "Breakeven is above the range \u2014 these picks are losing "
-                "by more than variance explains."))
-        )
-        _need = int(0.25 * (1.96 / max(abs(_rate - 0.524), 0.005)) ** 2)
-        st.caption(
-            f"To separate a {_rate:.1%} hit rate from breakeven with "
-            f"confidence you would need roughly {_need:,} graded bets."
-        )
-
-    # Closing line value — the only measurement that can say anything at
-    # NFL volume, where a season is ~100 bets.
-    _clv = clv_summary(tr)
-    if _clv["n"]:
-        st.markdown('<div class="se-sec">CLOSING LINE VALUE</div>',
+    # One question first: are the bets you are actually making winning, and
+    # is it real? Everything else is detail and lives in the dropdown.
+    if tr.empty:
+        st.info("No bets frozen yet. Build the card on the Slate tab and tap "
+                "**Freeze card** before kickoff.")
+    else:
+        _money = tr[tr["bet_tier"].isin(list(BET_TIERS))]
+        _s = summarize(_money)
+        st.markdown('<div class="se-sec">YOUR BETS</div>',
                     unsafe_allow_html=True)
         st.markdown(
             stat_strip([
-                (f"{_clv['mean']:+.2f}", "Avg pts vs close",
-                 "pos" if _clv["mean"] >= 0 else "neg"),
-                (f"{_clv['beat']:.0%}", "Beat the close", ""),
-                (f"{_clv['zero']:.0%}", "No movement", ""),
-                (f"{_clv['n']}", "Measured", ""),
+                (f"{_s['w']}-{_s['l']}-{_s['p']}", "W \u00b7 L \u00b7 P", ""),
+                (f"{_s['units']:+.2f}u", "Units",
+                 "pos" if _s["units"] >= 0 else "neg"),
+                (f"{_s['roi']:+.1%}" if _s["n"] else "\u2014", "ROI",
+                 ("pos" if _s["roi"] >= 0 else "neg") if _s["n"] else ""),
+                (f"{_s['n']}", "Graded", ""),
             ]),
             unsafe_allow_html=True,
         )
-        if _clv["n_clean"] < 30:
-            st.caption(
-                f"{_clv['n_clean']} of {_clv['n']} closes were snapshotted in "
-                "the 3 hours before kickoff. Only those are a real measurement — a "
-                "number pulled whenever the app happened to run is not a "
-                "closing line. Nothing here counts as evidence until roughly "
-                "100 clean captures, whatever the sign."
-            )
-        elif math.isfinite(_clv["t"]):
-            st.caption(
-                f"Clean closes average {_clv['clean_mean']:+.2f} pts. Signal "
-                f"strength {_clv['t']:+.2f} on {_clv['n_clean']} pregame "
-                "captures — above +2.00 would be meaningful."
-            )
-
-    if tr.empty:
-        st.info("No bets frozen yet.")
-    else:
-        for tier in ["OFFICIAL", "LEAN", "WATCH"]:
-            sub = tr[tr["bet_tier"] == tier]
-            if tier == "LEAN" and sub.empty:
-                continue
-            s = summarize(sub)
-            _tl = {"OFFICIAL": "OFFICIAL", "LEAN": f"BET \u00b7 SPREAD "
-                   f"{LEAN_GAP_PTS:g}+ OFF", "WATCH": "WATCH"}[tier]
-            st.markdown(f'<div class="se-sec">{_tl} LEDGER</div>',
-                         unsafe_allow_html=True)
-            st.markdown(
-                stat_strip([
-                    (f"{s['w']}-{s['l']}-{s['p']}", "W \u00b7 L \u00b7 P", ""),
-                    (f"{s['units']:+.2f}u", "Units",
-                     "pos" if s["units"] >= 0 else "neg"),
-                    (f"{s['roi']:+.1%}" if s["n"] else "\u2014", "ROI",
-                     ("pos" if s["roi"] >= 0 else "neg") if s["n"] else ""),
-                    (f"{s['n']}", "Graded", ""),
-                ]),
-                unsafe_allow_html=True,
-            )
-            _eq = ""
-            if s["n"]:
-                _gsub = sub[sub["result"].isin(["WIN", "LOSS", "PUSH"])].copy()
-                _sort_cols = [c for c in ("season", "week", "kickoff")
-                              if c in _gsub.columns]
-                if _sort_cols:
-                    _gsub = _gsub.sort_values(_sort_cols)
-                _eq = se_equity_svg(
-                    pd.to_numeric(_gsub.get("units_result"), errors="coerce")
-                    .fillna(0.0).tolist()
-                )
+        _gm = _money[_money["result"].isin(["WIN", "LOSS", "PUSH"])].copy()
+        if len(_gm):
+            _sc = [c for c in ("season", "week", "kickoff") if c in _gm.columns]
+            if _sc:
+                _gm = _gm.sort_values(_sc)
+            _eq = se_equity_svg(pd.to_numeric(_gm.get("units_result"),
+                                              errors="coerce").fillna(0.0).tolist())
             if _eq:
                 st.markdown(f'<div class="se-curve">{_eq}</div>',
                             unsafe_allow_html=True)
-                st.caption("Every graded bet in order, 1 unit flat. "
-                           "Nothing reset, nothing hidden.")
+        st.caption("Official and Bet plays combined, 1 unit each. Watch plays "
+                   "are not bets and are not counted here.")
 
-            m = pd.to_numeric(sub.get("result_margin"), errors="coerce").dropna()
-            if len(m):
-                st.caption(f"Average result margin {m.mean():+.2f} pts across "
-                           f"{len(m)} graded bets — a continuous read that "
-                           f"converges faster than win rate.")
+        # The verdict, in words. Wilson interval: stays inside 0-100% even
+        # with a handful of bets (the old one said 36% to 124%).
+        _w, _l = _s["w"], _s["l"]
+        _nn = _w + _l
+        if _nn == 0:
+            _tone, _lab = "wait", "Waiting on results"
+            _why = ("Bets grade automatically once the games are final "
+                    "\u2014 open the app the next morning.")
+        else:
+            _z = 1.96
+            _ph = _w / _nn
+            _den = 1 + _z * _z / _nn
+            _cen = (_ph + _z * _z / (2 * _nn)) / _den
+            _hw = (_z * math.sqrt(_ph * (1 - _ph) / _nn
+                                  + _z * _z / (4 * _nn * _nn))) / _den
+            _lo, _hi = max(0.0, _cen - _hw), min(1.0, _cen + _hw)
+            if _lo > 0.524:
+                _tone, _lab = "pos", "Winning by more than luck explains"
+            elif _hi < 0.524:
+                _tone, _lab = "neg", "Losing by more than luck explains"
+            else:
+                _tone, _lab = "wait", "Too early to tell"
+            _why = (f"{_w}-{_l} is {_ph:.0%}. With {_nn} decided bets, a true "
+                    f"rate anywhere from {_lo:.0%} to {_hi:.0%} could produce "
+                    f"that; break-even is 52.4%. Proving a small edge (53\u201355%) "
+                    f"from wins and losses alone takes thousands of bets "
+                    f"\u2014 the closing-line check below gets there far sooner.")
+        st.markdown(
+            f'<div class="se-verdict {_tone}"><span class="se-verdict-dot"></span>'
+            f'<b>{_lab}</b><em>{_nn} decided</em></div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(_why)
 
-        st.dataframe(tr, hide_index=True, use_container_width=True)
-        st.download_button("Download tracker CSV",
-                           tr.to_csv(index=False).encode(),
-                           "sunday_edge_tracker.csv", "text/csv")
+        # Closing lines, in one sentence.
+        _cm = clv_summary(_money)
+        if _cm["n_clean"] == 0:
+            st.caption(
+                "**Closing lines:** not measured yet. Open the app within 3 "
+                "hours of kickoff (about 12:30 and 3:45 on Sundays) and it "
+                "records where each line closed. If lines keep moving toward "
+                "your picks, that is the earliest real sign of an edge.")
+        else:
+            st.caption(
+                f"**Closing lines:** on {_cm['n_clean']} bets measured before "
+                f"kickoff, the line moved {_cm['clean_mean']:+.2f} pts your "
+                f"way on average"
+                + (f" (signal strength {_cm['t']:+.2f}; above +2 is "
+                   f"meaningful)." if _cm["n_clean"] >= 30 and
+                   math.isfinite(_cm["t"]) else
+                   ". Consistently positive is a good sign; it takes about "
+                   "100 measured bets to mean much."))
+
+        with st.expander("Details: each tier, the watch list, every bet"):
+            st.caption(
+                f"**Official** = positive value after the blend. **Bet** = a "
+                f"spread the model has {LEAN_GAP_PTS:g}+ points off the line "
+                f"(53.7% in the 2021\u20132025 backtest). **Watch** = not "
+                f"bets: spreads {WATCH_SPREAD_GAP:g}\u2013{LEAN_GAP_PTS:g} "
+                f"off and totals {MIN_GAP_PTS:g}+ off, tracked to see whether "
+                f"the model's weaker leans mean anything. **Average result "
+                f"margin** = points by which picks beat (+) or missed (\u2212) "
+                f"the line.")
+            for tier in ["OFFICIAL", "LEAN", "WATCH"]:
+                sub = tr[tr["bet_tier"] == tier]
+                if tier == "LEAN" and sub.empty:
+                    continue
+                s = summarize(sub)
+                _tl = {"OFFICIAL": "OFFICIAL", "LEAN": f"BET \u00b7 SPREAD "
+                       f"{LEAN_GAP_PTS:g}+ OFF", "WATCH": "WATCH"}[tier]
+                st.markdown(f'<div class="se-sec">{_tl} LEDGER</div>',
+                             unsafe_allow_html=True)
+                st.markdown(
+                    stat_strip([
+                        (f"{s['w']}-{s['l']}-{s['p']}", "W \u00b7 L \u00b7 P", ""),
+                        (f"{s['units']:+.2f}u", "Units",
+                         "pos" if s["units"] >= 0 else "neg"),
+                        (f"{s['roi']:+.1%}" if s["n"] else "\u2014", "ROI",
+                         ("pos" if s["roi"] >= 0 else "neg") if s["n"] else ""),
+                        (f"{s['n']}", "Graded", ""),
+                    ]),
+                    unsafe_allow_html=True,
+                )
+                _eq = ""
+                if s["n"]:
+                    _gsub = sub[sub["result"].isin(["WIN", "LOSS", "PUSH"])].copy()
+                    _sort_cols = [c for c in ("season", "week", "kickoff")
+                                  if c in _gsub.columns]
+                    if _sort_cols:
+                        _gsub = _gsub.sort_values(_sort_cols)
+                    _eq = se_equity_svg(
+                        pd.to_numeric(_gsub.get("units_result"), errors="coerce")
+                        .fillna(0.0).tolist()
+                    )
+                if _eq:
+                    st.markdown(f'<div class="se-curve">{_eq}</div>',
+                                unsafe_allow_html=True)
+                    st.caption("Every graded bet in order, 1 unit flat. "
+                               "Nothing reset, nothing hidden.")
+
+                m = pd.to_numeric(sub.get("result_margin"), errors="coerce").dropna()
+                if len(m):
+                    st.caption(f"Average result margin {m.mean():+.2f} pts across "
+                               f"{len(m)} graded bets — a continuous read that "
+                               f"converges faster than win rate.")
+
+            _ca = clv_summary(tr)
+            if _ca["n"]:
+                st.markdown('<div class="se-sec">CLOSING LINES, ALL TIERS</div>',
+                            unsafe_allow_html=True)
+                st.markdown(
+                    stat_strip([
+                        (f"{_ca['mean']:+.2f}", "Avg pts vs close",
+                         "pos" if _ca["mean"] >= 0 else "neg"),
+                        (f"{_ca['beat']:.0%}", "Beat the close", ""),
+                        (f"{_ca['zero']:.0%}", "No movement", ""),
+                        (f"{_ca['n']}", "Measured", ""),
+                    ]),
+                    unsafe_allow_html=True,
+                )
+                st.caption(f"{_ca['n_clean']} of {_ca['n']} captured within 3 "
+                           f"hours of kickoff; only those count.")
+            st.dataframe(tr, hide_index=True, use_container_width=True)
+            st.download_button("Download tracker CSV",
+                               tr.to_csv(index=False).encode(),
+                               "sunday_edge_tracker.csv", "text/csv")
 
     # Injury model: what is in effect, and (owner only) a way to measure it.
     with st.expander("Injury model", expanded=False):
