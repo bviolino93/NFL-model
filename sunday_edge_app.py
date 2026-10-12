@@ -4115,7 +4115,7 @@ def render_row(r, badge):
     the weighting step happened invisibly between them.
     """
     cls = ("go" if str(badge).startswith(("Bet", "Best bet")) else
-           {"Watch": "hold"}.get(badge, "off"))
+           {"Watch": "hold", "Lean": "hold"}.get(badge, "off"))
     ev = float(r["expected_value"])
     e = _html.escape
     side = str(r.get("pick_side", "")).upper()
@@ -4377,6 +4377,9 @@ with tab_slate:
         _seen = set()
         _mo = [f for f in _mo
                if not (f["matchup"] in _seen or _seen.add(f["matchup"]))]
+        # v1.4: the card is bets only. Moneylines were never measured in the
+        # backtest or logged by Freeze, so they cannot carry stars.
+        _mo = []
         _shown = len(_sp) + len(_to)
         _nq = _nsp + _nto + len(_mo)
         _n = len(_sp) + len(_to) + len(_mo)
@@ -4386,7 +4389,7 @@ with tab_slate:
 
         _h = [f'<div class="sc-wrap">'
               f'<div class="sc-top"><h2>Top picks</h2>'
-              f'<span>{_html.escape(_kick)} \u00b7 {_n} plays \u00b7 '
+              f'<span>{_html.escape(_kick)} \u00b7 {_n} {"play" if _n == 1 else "plays"} \u00b7 '
               f'\u2605\u2605\u2605 high \u00b7 \u2605\u2605 medium \u00b7 \u2605 low \u00b7 1 unit each'
               f'</span></div>']
 
@@ -4538,7 +4541,8 @@ with tab_slate:
                     kick = pd.to_datetime(kick).strftime("%-I:%M %p")
                 except Exception:
                     pass
-                _tag = stars(r.get("confidence", row_confidence(r))) + " "
+                _c = r.get("confidence", row_confidence(r))
+                _tag = (stars(_c) + " ") if _c else "Lean \u00b7 "
                 _h.append(
                     f'<div class="sc-row"><div class="sc-rank">{i}</div>'
                     f'<div class="sc-main"><b>{_html.escape(_tag + str(r["pick_label"]))}</b>'
@@ -4549,6 +4553,19 @@ with tab_slate:
 
         _blk("Spreads", _sp)
         _blk("Totals", _to)
+        if not (_sp or _to):
+            _h.append('<div class="sc-grp">No bets on this slate. The model '
+                      'is not far enough from any line.</div>')
+        # Leans: not bets, no stars, no money. Shown so you can see exactly
+        # what Freeze logs to the "logged leans" ledger.
+        _ln = []
+        if not card.empty:
+            _ld = add_confidence(card[card["bet_tier"] == "WATCH"])
+            if len(_ld):
+                _ld = _ld.assign(_g=(pd.to_numeric(_ld["model_line"], errors="coerce")
+                                     - pd.to_numeric(_ld["bet_line"], errors="coerce")).abs())
+                _ln = list(_ld.sort_values("_g", ascending=False).iterrows())
+        _blk("Leans", _ln)
         if _mo:
             _h.append('<div class="sc-grp">Moneyline</div>')
             for i, f in enumerate(_mo[:4], start=1):
@@ -4560,9 +4577,9 @@ with tab_slate:
                     f'<span>{f["prob"]:.0%}</span></div></div>')
 
         _h.append(
-            f'<div class="sc-foot">Sunday Edge \u00b7 every market where the '
-            f'bets only, most confident first. Stars are information; '
-            f'stake stays flat.'
+            f'<div class="sc-foot">Sunday Edge \u00b7 '
+            f'bets first, most confident first. Leans are not bets. '
+            f'Stars are information; stake stays flat.'
             f'</div></div>')
         st.markdown("".join(_h), unsafe_allow_html=True)
 
@@ -4572,10 +4589,12 @@ with tab_slate:
             for _, r in (_sp + _to):
                 _c = r.get("confidence", row_confidence(r))
                 render_row(r, f"Bet {stars(_c)} {CONF_NAME[_c]}")
+            for _, r in _ln:
+                render_row(r, "Lean")
 
         _n_off = int(_bets["bet_tier"].isin(list(BET_TIERS)).sum()) if len(_bets) else 0
         if not _bets.empty and st.button(
-                f"Freeze card ({_n_off} bets)",
+                f"Freeze card ({_n_off} bets, {len(_bets) - _n_off} leans)",
                 use_container_width=True):
             tr, n = freeze(_bets, load_tracker())
             st.success(f"Froze {n} new bets." if n else "Nothing new to freeze.")
@@ -4656,10 +4675,8 @@ with tab_game:
                 _need = (f"a spread bet needs {LEAN_GAP_PTS:g}+"
                          if unit != "total" else
                          "totals only become bets when the math says they win")
-                st.info(f"**Don't bet.** The model leans {lean}, "
-                        f"{_gap:.1f} pts off the market \u2014 {_need}. "
-                        f"Logged so the tracker can see if these leans mean "
-                        f"anything.")
+                st.warning(f"**Lean {lean}** \u2014 {_gap:.1f} pts off the "
+                           f"market. Not a bet: {_need}.")
             else:
                 _need = (f"a spread bet needs {LEAN_GAP_PTS:g}+"
                          if unit != "total" else
@@ -4837,7 +4854,7 @@ with tab_tracker:
             if _eq:
                 st.markdown(f'<div class="se-curve">{_eq}</div>',
                             unsafe_allow_html=True)
-        st.caption("Every bet, 1 unit each. Logged leans that were not bets "
+        st.caption("Every bet, 1 unit each. Leans "
                    "are not counted here.")
 
         # The verdict, in words. Wilson interval: stays inside 0-100% even
@@ -4909,13 +4926,13 @@ with tab_tracker:
         st.caption("If the stars are real, \u2605\u2605\u2605 should beat "
                    "\u2605 over a season. Until then, every bet is 1 unit.")
 
-        with st.expander("Details: each level, logged leans, every bet"):
+        with st.expander("Details: each level, leans, every bet"):
             st.caption(
                 f"**\u2605\u2605\u2605 High** = the math says a clear winner "
                 f"({HIGH_COVER:.0%}+ to cover). **\u2605\u2605 Medium** = a "
                 f"smaller edge the math backs, or a spread "
                 f"{MED_GAP_PTS:g}+ off. **\u2605 Low** = a spread "
-                f"{LEAN_GAP_PTS:g}\u2013{MED_GAP_PTS:g} off. **Logged leans** "
+                f"{LEAN_GAP_PTS:g}\u2013{MED_GAP_PTS:g} off. **Leans** "
                 f"= not bets: spreads {WATCH_SPREAD_GAP:g}\u2013"
                 f"{LEAN_GAP_PTS:g} off and totals {MIN_GAP_PTS:g}+ off, tracked "
                 f"to see whether weaker leans mean anything. **Average result "
@@ -4928,7 +4945,7 @@ with tab_tracker:
                     continue
                 s = summarize(sub)
                 _tl = (f"{stars(tier)} {CONF_NAME[tier].upper()}" if tier
-                       else "LOGGED LEANS (NOT BETS)")
+                       else "LEANS")
                 st.markdown(f'<div class="se-sec">{_tl} LEDGER</div>',
                              unsafe_allow_html=True)
                 st.markdown(
@@ -4967,7 +4984,7 @@ with tab_tracker:
 
             _ca = clv_summary(tr)
             if _ca["n"]:
-                st.markdown('<div class="se-sec">CLOSING LINES, BETS AND LOGGED LEANS</div>',
+                st.markdown('<div class="se-sec">CLOSING LINES, BETS AND LEANS</div>',
                             unsafe_allow_html=True)
                 st.markdown(
                     stat_strip([
