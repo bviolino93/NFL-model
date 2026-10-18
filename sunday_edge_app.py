@@ -1431,7 +1431,19 @@ MIN_GAP_PTS = 4.0
 #   WATCH     the secondary level: spreads WATCH_SPREAD_GAP+ off, and totals
 #             MIN_GAP_PTS+ off (totals stay watch-only: their 4+ leans went
 #             47.9% in the same backtest).
-LEAN_GAP_PTS = 4.0
+LEAN_GAP_PTS = 3.0   # v1.8: was 4. 3+ spreads tested the same as 4+ (51-52%).
+# v1.8 relative spreads: if fewer than REL_SPREAD_MIN spreads clear the bar
+# in a week, the next-largest disagreements (at least REL_SPREAD_FLOOR off)
+# are promoted to leans, so the card always ranks the week's spreads.
+REL_SPREAD_MIN = 4
+REL_SPREAD_FLOOR = 1.5
+# v1.8 wind rule. Outdoor games 2006-2025 vs the closing total: 10+ mph wind
+# went Under 692-564 (55.1%), and held in both decades. That used the actual
+# kickoff wind; a forecast is noisier, so the price assumes 54%. Totals
+# without wind are tracked on the watch list only: the model's own totals
+# lean tested slightly backwards (weight -0.13, t -1.63, 2020-2025).
+WIND_UNDER_MPH = 10.0
+WIND_UNDER_PROB = 0.54
 # v1.6: totals 4+ off are leans (bets) too, as spreads already were, so the
 # NFL card runs at about the college app's volume. Simulated on 2023-2025
 # (base model, 720 games) 29% of spreads and 29% of totals clear 4 points:
@@ -1540,7 +1552,8 @@ def model_version():
     """Threshold is part of the version: change the bar and the record it
     produces is no longer comparable with what came before."""
     v = (f"{MODEL_VERSION_BASE}-ev{MIN_EV:g}-g{MIN_GAP_PTS:g}"
-         f"-L{LEAN_GAP_PTS:g}t{LEAN_TOTAL_GAP_PTS:g}w{WATCH_SPREAD_GAP:g}")
+         f"-L{LEAN_GAP_PTS:g}t{LEAN_TOTAL_GAP_PTS:g}w{WATCH_SPREAD_GAP:g}"
+         f"-wu{WIND_UNDER_MPH:g}-rel{REL_SPREAD_MIN}")
     # The injury adjustment changes the model line, so bets frozen with it
     # on are tagged and can be scored separately from those without.
     if load_injury_adjustment():
@@ -3276,6 +3289,38 @@ def assign_tiers(card):
     return card.assign(gap_pts=gap, bet_tier=tier)
 
 
+def apply_v18_rules(card):
+    """Wind Unders as the totals bet, other totals to the watch list, and a
+    minimum number of relative spread leans each week."""
+    if card is None or card.empty:
+        return card
+    c = card.copy()
+    mt = c["market_type"].astype(str).str.upper()
+    wind = (pd.to_numeric(c["wind_mph"], errors="coerce") if "wind_mph" in c.columns
+            else pd.Series(np.nan, index=c.index))
+    windy = (mt == "TOTAL") & (wind >= WIND_UNDER_MPH)
+    for idx in c.index[windy]:
+        line = float(c.at[idx, "bet_line"])
+        odds = ASSUMED_PRICE
+        c.at[idx, "pick_side"] = "UNDER"
+        c.at[idx, "pick_label"] = f"Under {line:g} \u00b7 wind {float(wind[idx]):.0f}mph"
+        c.at[idx, "odds"] = odds
+        c.at[idx, "cover_prob"] = WIND_UNDER_PROB
+        c.at[idx, "expected_value"] = ev_from_prob(WIND_UNDER_PROB, odds)
+        c.at[idx, "bet_tier"] = "OFFICIAL"
+        c.at[idx, "proven_share"] = 1.0
+    other_tot = (mt == "TOTAL") & ~windy & c["bet_tier"].isin(["OFFICIAL", "LEAN"])
+    c.loc[other_tot, "bet_tier"] = "WATCH"
+    sp = mt == "SPREAD"
+    n_bets = int((sp & c["bet_tier"].isin(["OFFICIAL", "LEAN"])).sum())
+    if n_bets < REL_SPREAD_MIN:
+        pool = c[sp & ~c["bet_tier"].isin(["OFFICIAL", "LEAN"])
+                 & (pd.to_numeric(c["gap_pts"], errors="coerce") >= REL_SPREAD_FLOOR)]
+        pool = pool.sort_values("gap_pts", ascending=False).head(REL_SPREAD_MIN - n_bets)
+        c.loc[pool.index, "bet_tier"] = "LEAN"
+    return c
+
+
 def _proven_share(edge, proven):
     """Share of the fair edge, in the bet's direction, that comes from the
     measured adjustments. 0 when they push the other way, capped at 1."""
@@ -3473,6 +3518,7 @@ def build_card(sched, season, week, sign, offers=None):
     # the whole slate (~30 markets) while the card showed ~7. The tracker was
     # measuring a different set of bets than the one on screen.
     card = assign_tiers(card)
+    card = apply_v18_rules(card)
     # Qualifying rows first, then by disagreement.
     card["_tier_rank"] = card["bet_tier"].map(
         {"OFFICIAL": 0, "LEAN": 1, "WATCH": 2}).fillna(3)
