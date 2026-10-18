@@ -1429,6 +1429,13 @@ MIN_GAP_PTS = 4.0
 #             MIN_GAP_PTS+ off (totals stay watch-only: their 4+ leans went
 #             47.9% in the same backtest).
 LEAN_GAP_PTS = 4.0
+# v1.6: totals 4+ off are leans (bets) too, as spreads already were, so the
+# NFL card runs at about the college app's volume. Simulated on 2023-2025
+# (base model, 720 games) 29% of spreads and 29% of totals clear 4 points:
+# ~0.6 bets per game, the same rate as Saturday Edge. The same simulation
+# found no edge at that gap (spreads 50.7%, totals 49.0%), so this is volume
+# for measurement, not a claim; the tracker will say whether they land.
+LEAN_TOTAL_GAP_PTS = 4.0
 WATCH_SPREAD_GAP = 2.0
 BET_TIERS = ("OFFICIAL", "LEAN")
 SHOWN_TIERS = ("OFFICIAL", "LEAN", "WATCH")
@@ -1521,7 +1528,7 @@ def model_version():
     """Threshold is part of the version: change the bar and the record it
     produces is no longer comparable with what came before."""
     v = (f"{MODEL_VERSION_BASE}-ev{MIN_EV:g}-g{MIN_GAP_PTS:g}"
-         f"-L{LEAN_GAP_PTS:g}w{WATCH_SPREAD_GAP:g}")
+         f"-L{LEAN_GAP_PTS:g}t{LEAN_TOTAL_GAP_PTS:g}w{WATCH_SPREAD_GAP:g}")
     # The injury adjustment changes the model line, so bets frozen with it
     # on are tagged and can be scored separately from those without.
     if load_injury_adjustment():
@@ -3249,7 +3256,8 @@ def assign_tiers(card):
     is_sp = card["market_type"].astype(str).str.upper() == "SPREAD"
     tier = np.where(
         ev >= MIN_EV, "OFFICIAL",
-        np.where(is_sp & (gap >= LEAN_GAP_PTS), "LEAN",
+        np.where((is_sp & (gap >= LEAN_GAP_PTS))
+                 | (~is_sp & (gap >= LEAN_TOTAL_GAP_PTS) & ~conflict), "LEAN",
                  np.where((is_sp & (gap >= WATCH_SPREAD_GAP))
                           | (~is_sp & (gap >= MIN_GAP_PTS) & ~conflict),
                           "WATCH", None)))
@@ -4405,10 +4413,16 @@ def hm_state(r, now):
 
 
 def hm_countdown(r, now):
+    res = str(r.get("result", "") or "").upper()
+    if res in ("WIN", "LOSS", "PUSH"):
+        return {"WIN": "WON", "LOSS": "LOST", "PUSH": "PUSH"}[res], \
+            {"WIN": "won", "LOSS": "lost", "PUSH": "push"}[res]
     k = hm_kick(r)
     if k is None:
         return "TBD", "wait"
     m = (k - now).total_seconds() / 60.0
+    if m <= -240:
+        return "final \u00b7 grading", "wait"
     if m <= 0:
         return "live now", "live"
     if m < 60:
@@ -4437,6 +4451,23 @@ def hm_label(r):
     if str(r.get("market_type", "")).upper() == "TOTAL" and lab:
         return lab.title() if lab.isupper() else lab
     return lab or str(r.get("matchup", ""))
+
+
+def hm_weather_flip(r):
+    """'Under'/'Over' when a total's pick points AGAINST the raw model line,
+    which only happens when the weather adjustment outweighs it."""
+    if str(r.get("market_type", "")).upper() != "TOTAL":
+        return None
+    try:
+        raw_up = float(r.get("model_line")) > float(r.get("bet_line"))
+    except (TypeError, ValueError):
+        return None
+    side = str(r.get("pick_side", "")).upper()
+    if side == "UNDER" and raw_up:
+        return "Under"
+    if side == "OVER" and not raw_up:
+        return "Over"
+    return None
 
 
 def hm_gap_bar_svg(r, w=340, h=78):
@@ -4743,6 +4774,10 @@ HM_CSS = """<style>
 .hm-hero.t2 .hm-hero-stars b{color:#4ae0aa}
 .hm-hero.t1 .hm-hero-stars b{color:#7fb4ff}
 .hm-hero-stars span{font-size:.52rem;letter-spacing:.13em;color:#7f97ae;text-transform:uppercase}
+.hm-flip{margin:8px 2px 6px;font-size:.68rem;line-height:1.45;color:#c9d6e4;padding:9px 11px;
+  border-radius:10px;background:rgba(127,180,255,.08);border:1px solid rgba(127,180,255,.25)}
+.hm-hero-meta .won{color:#4ae0aa;font-weight:900}.hm-hero-meta .lost{color:#f2748a;font-weight:900}
+.hm-hero-meta .push{color:#f2c14e;font-weight:900}.hm-hero-meta .live{color:#4ae0aa;font-weight:800}
 .hm-viz{padding:10px 8px 4px;border-radius:14px;background:rgba(12,26,44,.5);
   border:1px solid rgba(120,154,188,.12)}
 .hm-head{display:flex;align-items:center;gap:8px;margin:20px 2px 6px}
@@ -4842,11 +4877,16 @@ def render_home(sched):
         (df.sort_values("_conf", ascending=False, kind="stable").iloc[0], "BEST PLAY")
     lvh = int(hero["_conf"])
     cd, cst = hm_countdown(hero, now)
+    _flip = hm_weather_flip(hero)
     try:
         fa, mk, gap, is_tot = hm_lines(hero)
         f_ = (lambda v: f"{v:.1f}") if is_tot else (lambda v: f"{v:+.1f}")
-        meta = (f'<span>model <b>{f_(fa)}</b></span><span>mkt <b>{f_(mk)}</b></span>'
-                f'<span><b>{math.floor(gap*10)/10:.1f} pts</b> off</span>')
+        if _flip:
+            meta = (f'<span>raw model <b>{f_(fa)}</b></span><span>mkt <b>{f_(mk)}</b></span>'
+                    f'<span><b>weather</b> flips it to the {_flip}</span>')
+        else:
+            meta = (f'<span>model <b>{f_(fa)}</b></span><span>mkt <b>{f_(mk)}</b></span>'
+                    f'<span><b>{math.floor(gap*10)/10:.1f} pts</b> off</span>')
     except Exception:
         meta = ""
     k = hero["_k"]
@@ -4859,7 +4899,11 @@ def render_home(sched):
         f'<small>{_html.escape(str(hero.get("matchup", "")))}</small>'
         f'<div class="hm-hero-meta">{meta}</div></div>'
         f'<div class="hm-hero-stars"><b>{"★" * lvh}</b><span>{CONF_NAME.get(lvh, "")}</span></div>'
-        f'</div><div style="margin-top:10px">{hm_gap_bar_svg(hero)}</div></div>',
+        f'</div><div style="margin-top:10px">{"" if _flip else hm_gap_bar_svg(hero)}</div>'
+        + (f'<div class="hm-flip">The base model leans {"Over" if _flip == "Under" else "Under"}, '
+           f'but the measured weather adjustment (applied on top, outside the blend) '
+           f'is larger and points to the {_flip}. That is what makes this a bet.</div>'
+           if _flip else "") + '</div>',
         unsafe_allow_html=True)
 
     tl = hm_timeline_svg(df, now, day)
@@ -5608,10 +5652,11 @@ with tab_tracker:
                 f"own (weather, QB, injuries). **\u2605\u2605 Medium** = a bet "
                 f"whose edge comes mostly from the base power rating, which did "
                 f"not beat the close in backtest. **\u2605 Low** = a lean "
-                f"(a spread {LEAN_GAP_PTS:g}+ off that does not beat the vig). "
+                f"(a spread {LEAN_GAP_PTS:g}+ or total {LEAN_TOTAL_GAP_PTS:g}+ off "
+                f"that does not beat the vig). "
                 f"Bets frozen before v1.5 keep the old rule. **Leans** "
                 f"= not bets: spreads {WATCH_SPREAD_GAP:g}\u2013"
-                f"{LEAN_GAP_PTS:g} off and totals {MIN_GAP_PTS:g}+ off, tracked "
+                f"{LEAN_GAP_PTS:g} off, tracked "
                 f"to see whether weaker leans mean anything. **Average result "
                 f"margin** = points by which picks beat (+) or missed (\u2212) "
                 f"the line.")
