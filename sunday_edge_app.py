@@ -1437,17 +1437,36 @@ SHOWN_TIERS = ("OFFICIAL", "LEAN", "WATCH")
 # already stored on every row, so past bets get stars too and the record stays
 # continuous. Stakes stay flat at 1 unit; the stars are information until the
 # tracker shows the higher ones actually win more.
+# v1.5: stars rank WHERE the edge comes from. The base power rating did not
+# beat the closing line in backtest; the weather, QB and injury adjustments
+# each cleared a significance bar (t >= 2) on their own. So:
+#   3 High    a bet, and half or more of its edge comes from those measured
+#             adjustments (proven_share >= PROVEN_SHARE_HIGH).
+#   2 Medium  a bet whose edge comes mostly from the base rating.
+#   1 Low     a lean, any size (raw gap alone is not evidence).
+# Rows frozen before v1.5 have no proven_share and keep the old rule below:
 #   3 High    the math says a clear winner: positive value, 55%+ to cover.
 #   2 Medium  positive value under 55%, or a spread 5+ points off.
 #   1 Low     a spread 4-5 points off.
 #   0         not a bet (the old watch list: logged, never shown as a play).
 HIGH_COVER = 0.55
 MED_GAP_PTS = 5.0
+PROVEN_SHARE_HIGH = 0.5
 CONF_NAME = {3: "High", 2: "Medium", 1: "Low", 0: "Not a bet"}
 
 
-def confidence(tier, cover_prob=None, gap=None):
+def confidence(tier, cover_prob=None, gap=None, proven_share=None):
     tier = str(tier or "").upper()
+    try:
+        ps = float(proven_share)
+    except (TypeError, ValueError):
+        ps = float("nan")
+    if math.isfinite(ps):
+        if tier == "OFFICIAL":
+            return 3 if ps >= PROVEN_SHARE_HIGH else 2
+        if tier == "LEAN":
+            return 1
+        return 0
     try:
         p = float(cover_prob)
     except (TypeError, ValueError):
@@ -1474,7 +1493,8 @@ def row_confidence(r):
             gap = abs(float(r.get("model_line")) - float(r.get("bet_line")))
         except (TypeError, ValueError):
             gap = None
-    return confidence(r.get("bet_tier"), r.get("cover_prob"), gap)
+    return confidence(r.get("bet_tier"), r.get("cover_prob"), gap,
+                      r.get("proven_share") if hasattr(r, "get") else None)
 
 
 def add_confidence(df):
@@ -1520,7 +1540,7 @@ TRACKER_COLS = [
     "status", "result", "units_result", "result_margin",
     "final_home_score", "final_away_score",
     "closing_line", "clv_points", "closing_captured_at", "graded_at",
-    "kickoff_utc",
+    "kickoff_utc", "proven_share",
 ]
 
 st.set_page_config(page_title="Sunday Edge", page_icon="🏈", layout="wide")
@@ -1552,7 +1572,27 @@ def _tab(name):
     return f"{pre}{name}"
 
 
+@st.cache_resource(show_spinner=False)
+def _sheet_cached():
+    """One signed-in worksheet handle for the life of the app. Signing in and
+    finding the sheet by name were several Google round trips on every read.
+    A failure raises, so it is never cached."""
+    ws = _sheet_uncached()
+    if ws is None:
+        raise RuntimeError("sheet unavailable")
+    return ws
+
+
 def _sheet(return_error=False):
+    if not return_error:
+        try:
+            return _sheet_cached()
+        except Exception:
+            return None
+    return _sheet_uncached(return_error=True)
+
+
+def _sheet_uncached(return_error=False):
     """
     Connect to the tracker spreadsheet, and on failure say WHICH step failed.
 
@@ -1636,18 +1676,25 @@ def empty_tracker():
     return pd.DataFrame(columns=TRACKER_COLS)
 
 
-def load_tracker():
+@st.cache_data(ttl=600, show_spinner=False)
+def _tracker_records():
+    """The sheet read, cached; cleared on every save so changes show at once."""
     ws = _sheet()
-    if ws is not None:
-        try:
-            recs = ws.get_all_records()
-            df = pd.DataFrame(recs) if recs else empty_tracker()
-            for c in TRACKER_COLS:
-                if c not in df.columns:
-                    df[c] = None
-            return df[TRACKER_COLS]
-        except Exception:
-            pass
+    if ws is None:
+        raise RuntimeError("no sheet")
+    return ws.get_all_records()
+
+
+def load_tracker():
+    try:
+        recs = _tracker_records()
+        df = pd.DataFrame(recs) if recs else empty_tracker()
+        for c in TRACKER_COLS:
+            if c not in df.columns:
+                df[c] = None
+        return df[TRACKER_COLS]
+    except Exception:
+        pass
     return st.session_state.get("tracker", empty_tracker())
 
 
@@ -1696,6 +1743,10 @@ def save_tracker(df):
             except Exception:
                 old_rows = 0
             ws.update(body)
+            try:
+                _tracker_records.clear()
+            except Exception:
+                pass
             if old_rows > len(body):
                 try:
                     ws.delete_rows(len(body) + 1, old_rows)
@@ -3205,6 +3256,18 @@ def assign_tiers(card):
     return card.assign(gap_pts=gap, bet_tier=tier)
 
 
+def _proven_share(edge, proven):
+    """Share of the fair edge, in the bet's direction, that comes from the
+    measured adjustments. 0 when they push the other way, capped at 1."""
+    try:
+        e, pv = float(edge), float(proven)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(e) and math.isfinite(pv)) or abs(e) < 1e-9:
+        return 0.0
+    return round(max(0.0, min(1.0, pv * (1 if e > 0 else -1) / abs(e))), 3)
+
+
 def build_card(sched, season, week, sign, offers=None):
     rt = build_ratings(sched, season, week)
     if rt is None:
@@ -3238,6 +3301,7 @@ def build_card(sched, season, week, sign, offers=None):
         _im, _it, _inote, _ = injury_delta(season, week, h, a)
         _inj[g["game_id"]] = (_im, _it, _inote)
         raw_model = (rt["margin"][h] - rt["margin"][a] + home_field(g, rt)) + _qbd + _im
+        _adj_sp = _qbd + _im      # measured QB + injury points in the raw line
         mkt = sign * g["spread_line"] if pd.notna(g.get("spread_line")) else None
         live = lookup_offers(offers, a, h) if offers else None
 
@@ -3247,6 +3311,7 @@ def build_card(sched, season, week, sign, offers=None):
             if pts:
                 mkt = float(np.median(pts))
             fair = mkt + MODEL_WEIGHT * (raw_model - mkt)
+            _ps = _proven_share(fair - mkt, MODEL_WEIGHT * _adj_sp)
             # Home side covers above -point; away side covers below +point.
             cands = [(("HOME" if t == h else "AWAY"),
                       ("OVER_LIKE" if t == h else "UNDER_LIKE"),
@@ -3267,6 +3332,7 @@ def build_card(sched, season, week, sign, offers=None):
                     "bet_line": float(b["point"]), "model_line": float(raw_model),
                     "edge_pts": float(b["edge"]), "cover_prob": b["cover"],
                     "expected_value": b["ev"], "odds": b["price"],
+                    "proven_share": _ps,
                 })
                 mkt = None  # handled
 
@@ -3290,6 +3356,7 @@ def build_card(sched, season, week, sign, offers=None):
                 "edge_pts": float(edge), "cover_prob": p,
                 "expected_value": ev_from_prob(p, ASSUMED_PRICE),
                 "odds": ASSUMED_PRICE,
+                "proven_share": _proven_share(edge, MODEL_WEIGHT * _adj_sp),
             })
 
         # TOTAL — live books first
@@ -3307,6 +3374,8 @@ def build_card(sched, season, week, sign, offers=None):
             raw_total += _wx["raw_adj"]
             _mph, _wadj = _wx["wind"], _wx["fair_adj"]
             fair_t = mt + MODEL_WEIGHT_TOTAL * (raw_total - mt) + _wadj
+            _ps_t = _proven_share(fair_t - mt, MODEL_WEIGHT_TOTAL
+                                  * (_it + _wx["raw_adj"]) + _wadj)
             cands = [(nm, ("OVER_LIKE" if nm == "OVER" else "UNDER_LIKE"),
                       p, pr, bk)
                      for nm, p, pr, bk in live["totals"]]
@@ -3327,6 +3396,7 @@ def build_card(sched, season, week, sign, offers=None):
                     "bet_line": float(b["point"]), "model_line": float(raw_total),
                     "edge_pts": float(b["edge"]), "cover_prob": b["cover"],
                     "expected_value": b["ev"], "odds": b["price"],
+                    "proven_share": _ps_t,
                 })
                 continue
 
@@ -3356,6 +3426,8 @@ def build_card(sched, season, week, sign, offers=None):
                 "edge_pts": float(edge_t), "cover_prob": p,
                 "expected_value": ev_from_prob(p, ASSUMED_PRICE),
                 "odds": ASSUMED_PRICE,
+                "proven_share": _proven_share(edge_t, MODEL_WEIGHT_TOTAL
+                                              * (_it + _wx["raw_adj"]) + _wadj),
             })
 
     card = pd.DataFrame(rows)
@@ -3417,6 +3489,7 @@ def freeze(card, tracker):
             "model_line": r["model_line"], "edge_pts": r["edge_pts"],
             "cover_prob": r["cover_prob"], "expected_value": r["expected_value"],
             "odds": r["odds"], "bet_tier": r["bet_tier"],
+            "proven_share": r.get("proven_share"),
             "model_version": model_version(), "status": "FROZEN",
         })
         new.append(row)
@@ -3877,7 +3950,7 @@ div[data-testid="stExpander"]{border:1px solid var(--line)!important;
    testid and the ARIA roles rather than data-baseweb, which did not match
    on the deployed build and left the default red-underlined text tabs. */
 [data-testid="stTabs"] div[role="tablist"]{
-  display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;
+  display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;
   gap:4px!important;padding:4px!important;margin:2px 0 14px!important;
   border-radius:14px!important;background:#0A1628!important;
   border:1px solid var(--line)!important;
@@ -4206,11 +4279,7 @@ try:
 except Exception:
     _owner_code = ""
 if not _owner_code:
-    st.warning(
-        "**No owner code set.** Anyone with this link can freeze bets into "
-        "the shared record. Add an `owner_code` to Streamlit Secrets before "
-        "sharing the URL."
-    )
+    pass   # banner removed at the owner's request; set owner_code before sharing
 elif not is_owner():
     st.caption("Viewing the shared record \u2014 picks and grading are "
                "managed by the owner.")
@@ -4288,7 +4357,613 @@ if _pulled:
 
 sign = line_sign(sched_all)
 
-tab_slate, tab_game, tab_tracker = st.tabs(["Slate", "Game", "Tracker"])
+# ----------------------------------------------------------------------
+# Home — the Saturday Edge front page, for Sundays
+# ----------------------------------------------------------------------
+# Built from the frozen tracker, so it survives restarts and shows exactly
+# what was logged. Bets only (OFFICIAL and LEAN, the starred tiers); the
+# WATCH ledger stays in the Tracker.
+HM_COL = {3: "#ffd97a", 2: "#4ae0aa", 1: "#7fb4ff", 0: "#7f97ae"}
+HM_ESPN = {"WAS": "wsh", "LA": "lar", "JAX": "jax"}
+
+
+def hm_logo(team, size=24):
+    t = canon(team)
+    slug = HM_ESPN.get(t, t.lower())
+    return (f'<img src="https://a.espncdn.com/i/teamlogos/nfl/500/{slug}.png" '
+            f'width="{size}" height="{size}" style="border-radius:50%;'
+            f'background:#e8eef6;object-fit:contain;flex:0 0 {size}px" alt="">')
+
+
+def hm_pick_logo(r, size=24):
+    if str(r.get("market_type", "")).upper() == "TOTAL":
+        return (f'<span style="display:inline-flex">{hm_logo(r.get("away_team"), size)}'
+                f'<span style="margin-left:-{size // 3}px">{hm_logo(r.get("home_team"), size)}'
+                f'</span></span>')
+    side = str(r.get("pick_side", "")).upper()
+    return hm_logo(r.get("home_team") if side == "HOME" else r.get("away_team"), size)
+
+
+def hm_kick(r):
+    try:
+        k = pd.to_datetime(str(r.get("kickoff", "")))
+        if pd.isna(k):
+            return None
+        return k.tz_localize("America/New_York") if k.tzinfo is None else k
+    except Exception:
+        return None
+
+
+def hm_state(r, now):
+    if str(r.get("result", "") or "").strip() and str(r.get("result")).lower() != "nan":
+        return "done"
+    k = hm_kick(r)
+    if k is None:
+        return "up"
+    m = (k - now).total_seconds() / 60.0
+    return "up" if m > 0 else ("live" if m > -240 else "done")
+
+
+def hm_countdown(r, now):
+    k = hm_kick(r)
+    if k is None:
+        return "TBD", "wait"
+    m = (k - now).total_seconds() / 60.0
+    if m <= 0:
+        return "live now", "live"
+    if m < 60:
+        return f"in {int(m)}m", "soon"
+    h, mm = divmod(int(m), 60)
+    if h >= 48:
+        return f"in {h // 24}d", "wait"
+    return (f"in {h}h {mm}m" if mm else f"in {h}h"), "wait"
+
+
+def hm_lines(r):
+    """(model, market, gap, is_total) from the side being bet, in spread
+    notation. bet_line/model_line are stored as the HOME margin."""
+    bl, ml = float(r.get("bet_line")), float(r.get("model_line"))
+    if str(r.get("market_type", "")).upper() == "TOTAL":
+        return ml, bl, abs(ml - bl), True
+    if str(r.get("pick_side", "")).upper() == "HOME":
+        return -ml, -bl, abs(ml - bl), False
+    return ml, bl, abs(ml - bl), False
+
+
+def hm_label(r):
+    """Clean pick name: the stored label carries price and book."""
+    lab = str(r.get("pick_label", "") or "")
+    lab = lab.split(" (")[0].split(" @ ")[0].strip()
+    if str(r.get("market_type", "")).upper() == "TOTAL" and lab:
+        return lab.title() if lab.isupper() else lab
+    return lab or str(r.get("matchup", ""))
+
+
+def hm_gap_bar_svg(r, w=340, h=78):
+    try:
+        fa, mk, gap, is_tot = hm_lines(r)
+    except Exception:
+        return ""
+    lo, hi = min(mk, fa), max(mk, fa)
+    span = max(hi - lo, 4.0)
+    pad = span * 0.35
+    lo, hi = (lo + hi) / 2 - span / 2 - pad, (lo + hi) / 2 + span / 2 + pad
+    ml_, mr_ = 16, 16
+    X = lambda v: ml_ + (w - ml_ - mr_) * (v - lo) / (hi - lo)
+    y = 40
+    xm, xf = X(mk), X(fa)
+    fmt = (lambda v: f"{v:.1f}") if is_tot else (lambda v: f"{v:+.1f}")
+    a, b = min(xm, xf), max(xm, xf)
+    ticks, v = [], math.ceil(lo)
+    while v <= hi:
+        tx, big = X(v), (v % 5 == 0)
+        ticks.append(f'<line x1="{tx:.1f}" y1="{y+9}" x2="{tx:.1f}" y2="{y+(14 if big else 12)}" '
+                     f'stroke="#7f97ae" stroke-opacity="{.55 if big else .25}"/>')
+        v += 1
+    c1, c2 = ("#ffd97a", "#4ae0aa") if xm < xf else ("#4ae0aa", "#ffd97a")
+    return (
+        f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" style="display:block" '
+        f'xmlns="http://www.w3.org/2000/svg">'
+        f'<defs><linearGradient id="hmGap" x1="0" x2="1"><stop offset="0%" stop-color="{c1}"/>'
+        f'<stop offset="100%" stop-color="{c2}"/></linearGradient>'
+        f'<filter id="hmGlow" x="-50%" y="-50%" width="200%" height="200%">'
+        f'<feGaussianBlur stdDeviation="3"/></filter></defs>'
+        f'<line x1="{ml_}" y1="{y}" x2="{w-mr_}" y2="{y}" stroke="#7f97ae" stroke-opacity=".22" '
+        f'stroke-width="4" stroke-linecap="round"/>' + "".join(ticks) +
+        f'<rect x="{a:.1f}" y="{y-3}" width="{b-a:.1f}" height="6" rx="3" fill="url(#hmGap)" '
+        f'filter="url(#hmGlow)" opacity=".7"/>'
+        f'<rect x="{a:.1f}" y="{y-3}" width="{b-a:.1f}" height="6" rx="3" fill="url(#hmGap)"/>'
+        f'<circle cx="{xm:.1f}" cy="{y}" r="7" fill="#0b1b2d" stroke="#ffd97a" stroke-width="3"/>'
+        f'<circle cx="{xf:.1f}" cy="{y}" r="7" fill="#0b1b2d" stroke="#4ae0aa" stroke-width="3"/>'
+        f'<text x="{xm:.1f}" y="{y-15}" text-anchor="middle" font-size="10" font-weight="800" '
+        f'fill="#ffd97a" letter-spacing=".08em">MKT {fmt(mk)}</text>'
+        f'<text x="{xf:.1f}" y="{y-15}" text-anchor="middle" font-size="10" font-weight="800" '
+        f'fill="#4ae0aa" letter-spacing=".08em">MODEL {fmt(fa)}</text>'
+        f'<text x="{(a+b)/2:.1f}" y="{y+30}" text-anchor="middle" font-size="11" font-weight="800" '
+        f'fill="#dbe7f5">{math.floor(gap*10)/10:.1f} pts apart</text></svg>')
+
+
+def hm_timeline_svg(df, now, day, w=340):
+    pts = []
+    for _, r in df.iterrows():
+        k = hm_kick(r)
+        if k is None:
+            continue
+        hr = k.hour + k.minute / 60.0
+        if hr < 6:
+            hr += 24
+        pts.append((hr, int(r.get("_conf") or 0), r.get("_st") == "done",
+                    hm_label(r)))
+    if not pts:
+        return ""
+    a_, b_ = min(p[0] for p in pts), max(p[0] for p in pts)
+    lo, hi = math.floor(a_ - 1), math.ceil(b_ + 1)
+    while hi - lo < 4:
+        lo, hi = lo - 0.5, hi + 0.5
+    lo, hi = math.floor(lo), math.ceil(hi)
+    X = lambda v: 14 + (w - 28) * (v - lo) / (hi - lo)
+    stk = {}
+    for p in pts:
+        stk[round(p[0] * 4)] = stk.get(round(p[0] * 4), 0) + 1
+    tall = max(stk.values())
+    dy = 9 if tall <= 6 else 7
+    y = 30 + dy * (tall - 1)
+    h = y + 32
+    out = [f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" style="display:block" '
+           f'xmlns="http://www.w3.org/2000/svg">',
+           f'<line x1="14" y1="{y}" x2="{w-14}" y2="{y}" stroke="#7f97ae" stroke-opacity=".25" '
+           f'stroke-width="2" stroke-linecap="round"/>']
+    step = 1 if hi - lo <= 7 else (2 if hi - lo <= 12 else 3)
+    for t in range(int(lo), int(hi) + 1, step):
+        tx = X(t)
+        lab = {0: "12a", 12: "12p"}.get(t % 24, f"{(t % 12) or 12}{'p' if 12 <= t < 24 else 'a'}")
+        out.append(f'<line x1="{tx:.1f}" y1="{y+5}" x2="{tx:.1f}" y2="{y+10}" stroke="#7f97ae" '
+                   f'stroke-opacity=".45"/><text x="{tx:.1f}" y="{y+24}" text-anchor="middle" '
+                   f'font-size="9" font-weight="700" fill="#63798f">{lab}</text>')
+    try:
+        if str(now.date()) == str(day)[:10]:
+            nh = now.hour + now.minute / 60.0
+            if lo <= nh <= hi:
+                nx = X(nh)
+                out.append(f'<line x1="{nx:.1f}" y1="12" x2="{nx:.1f}" y2="{y+8}" stroke="#f2748a" '
+                           f'stroke-width="1.5" stroke-dasharray="2 3"/><text x="{nx:.1f}" y="9" '
+                           f'text-anchor="middle" font-size="8.5" font-weight="900" fill="#f2748a" '
+                           f'letter-spacing=".12em">NOW</text>')
+    except Exception:
+        pass
+    seen = {}
+    for hr, lv, done, sel in sorted(pts, key=lambda p: (p[0], -p[1])):
+        k = round(hr * 4)
+        n = seen.get(k, 0)
+        seen[k] = n + 1
+        c = HM_COL.get(lv, "#7f97ae")
+        r_ = (4 + lv) if tall <= 6 else (3 + lv * 0.7)
+        out.append(f'<circle cx="{X(hr):.1f}" cy="{y - dy*n:.1f}" r="{r_+4}" fill="{c}" '
+                   f'opacity="{".08" if done else ".18"}"/><circle cx="{X(hr):.1f}" '
+                   f'cy="{y - dy*n:.1f}" r="{r_}" fill="{c}" opacity="{".35" if done else "1"}">'
+                   f'<title>{_html.escape(sel)}</title></circle>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+@st.cache_data(ttl=55, show_spinner=False)
+def hm_live_scores():
+    """{(away, home): live state} from ESPN's public NFL scoreboard. Empty if
+    it cannot be reached; Home then just says "live now"."""
+    try:
+        js = requests.get("https://site.api.espn.com/apis/site/v2/sports/"
+                          "football/nfl/scoreboard", timeout=8).json()
+    except Exception:
+        return {}
+    out = {}
+    for ev in js.get("events", []) or []:
+        try:
+            comp = (ev.get("competitions") or [{}])[0]
+            stt = comp.get("status") or ev.get("status") or {}
+            teams = {c.get("homeAway"): c for c in comp.get("competitors", [])}
+            h, a = teams.get("home"), teams.get("away")
+            if not h or not a:
+                continue
+            ht, at = canon(h["team"]["abbreviation"]), canon(a["team"]["abbreviation"])
+            out[(at, ht)] = {
+                "state": str((stt.get("type") or {}).get("state") or ""),
+                "period": int(stt.get("period") or 0),
+                "clock": str(stt.get("displayClock") or ""),
+                "home_pts": float(h.get("score") or 0),
+                "away_pts": float(a.get("score") or 0),
+            }
+        except Exception:
+            continue
+    return out
+
+
+def hm_live_prob(r, lv):
+    """Chance this bet covers from here: rest of the game ~ Normal(market's
+    expectation for the time left, sd x sqrt(share left)). 50% at kickoff,
+    matching the pregame price the market sets."""
+    try:
+        bl = float(r.get("bet_line"))
+    except (TypeError, ValueError):
+        return None, None
+    hs, as_ = lv["home_pts"], lv["away_pts"]
+    mt = str(r.get("market_type", "")).upper()
+    sd_ = str(r.get("pick_side", "")).upper()
+    if mt == "TOTAL":
+        cur = (hs + as_) - bl if sd_ == "OVER" else bl - (hs + as_)
+    elif sd_ == "HOME":
+        cur = (hs - as_) - bl
+    else:
+        cur = (as_ - hs) + bl
+    if lv.get("state") == "post":
+        return (1.0 if cur > 0 else 0.0 if cur < 0 else 0.5), cur
+    q = lv.get("period") or 0
+    if q >= 5:
+        f = 0.05
+    else:
+        try:
+            mm, ss = (lv.get("clock") or "15:00").split(":")[-2:]
+            cs = int(mm) * 60 + int(float(ss))
+        except Exception:
+            cs = 450
+        f = max(((4 - max(q, 1)) * 900 + min(cs, 900)) / 3600.0, 0.0)
+    if f <= 1e-6:
+        return (1.0 if cur > 0 else 0.0 if cur < 0 else 0.5), cur
+    if mt == "TOTAL":
+        swing = bl * f if sd_ == "OVER" else -bl * f
+        sd = SD_TOTAL * math.sqrt(f)
+    else:
+        swing = bl * f if sd_ == "HOME" else -bl * f
+        sd = SD_MARGIN * math.sqrt(f)
+    z = (cur + swing) / sd
+    return min(max(0.5 * (1 + math.erf(z / math.sqrt(2))), 0.0), 1.0), cur
+
+
+def hm_live_html(r, lv):
+    if not lv:
+        return ""
+    p, cur = hm_live_prob(r, lv)
+    q = lv.get("period") or 0
+    clock = ("FINAL" if lv.get("state") == "post" else "OT" if q >= 5
+             else f"Q{q} {lv.get('clock', '')}" if q else "LIVE")
+    sc = (f'<span class="hm-lv-sc">{_html.escape(str(r.get("away_team")))} '
+          f'<b>{lv["away_pts"]:g}</b> · {_html.escape(str(r.get("home_team")))} '
+          f'<b>{lv["home_pts"]:g}</b></span>')
+    if p is None:
+        return f'<div class="hm-lv"><div class="hm-lv-top">{sc}<span class="hm-lv-ck">{clock}</span></div></div>'
+    pct = p * 100
+    col = "#4ae0aa" if pct >= 60 else ("#f2748a" if pct <= 40 else "#ffd97a")
+    say = (f"covering by {cur:g}" if cur > 0 else
+           (f"needs {abs(cur):g}" if lv.get("state") != "post" else f"missed by {abs(cur):g}")
+           if cur < 0 else "dead on the number")
+    return (f'<div class="hm-lv"><div class="hm-lv-top">{sc}<span class="hm-lv-ck">{clock}</span></div>'
+            f'<div class="hm-lv-bar"><i style="width:{pct:.0f}%;background:{col};box-shadow:0 0 10px {col}">'
+            f'</i><em></em></div><div class="hm-lv-bot"><span style="color:{col}">{say}</span>'
+            f'<b style="color:{col}">{pct:.0f}%</b><small>to cover</small></div></div>')
+
+
+def hm_row_html(r, now):
+    lv = int(r.get("_conf") or 0)
+    k = hm_kick(r)
+    t = k.strftime("%-I:%M") if k is not None else "TBD"
+    res = str(r.get("result", "") or "").upper()
+    tag = {"WIN": "W", "LOSS": "L", "PUSH": "P"}.get(res, "")
+    _, st_ = hm_countdown(r, now)
+    try:
+        gap = f"{math.floor(hm_lines(r)[2] * 10) / 10:.1f}"
+    except Exception:
+        gap = ""
+    tot = str(r.get("market_type", "")).upper() == "TOTAL"
+    lean = str(r.get("bet_tier", "")).upper() == "LEAN"
+    return (
+        f'<div class="hm-row t{lv} {st_}">'
+        f'<span class="hm-row-time">{t}'
+        + (f'<i class="{ {"W": "won", "L": "lost", "P": "push"}[tag] }">{tag}</i>' if tag else "")
+        + f'</span><span class="hm-row-logo">{hm_pick_logo(r, 22)}</span>'
+        f'<span class="hm-row-main"><b>{_html.escape(hm_label(r))}</b>'
+        f'<small>{_html.escape(str(r.get("matchup", "")))}</small></span>'
+        f'<span class="hm-row-side">' + ('<em>O/U</em>' if tot else '')
+        + ('<em>LEAN</em>' if lean else '')
+        + f'<span class="hm-row-stars">{"★" * lv}</span>'
+        f'<span class="hm-row-gap">{gap}</span></span></div>')
+
+
+def hm_summary_html(df):
+    n = len(df)
+    lv = df["_conf"]
+    c3, c2, c1 = int((lv == 3).sum()), int((lv == 2).sum()), int((lv <= 1).sum())
+    ks = [k for k in (hm_kick(r) for _, r in df.iterrows()) if k is not None]
+    first = min(ks).strftime("%-I:%M") if ks else "TBD"
+    last = max(ks).strftime("%-I:%M") if ks else ""
+    left = int((df["_st"] != "done").sum())
+    seg = lambda k, c: f'<i style="flex:{k};background:{c};box-shadow:0 0 10px {c}"></i>' if k else ""
+    return (
+        '<div class="hm-sum"><div class="hm-sum-grid">'
+        f'<div><b>{left if left != n else n}</b><span>{"left" if left != n else "bets"}</span></div>'
+        f'<div><b class="g">{c3}</b><span>★★★</span></div>'
+        f'<div><b>{first}</b><span>first kick</span></div>'
+        f'<div><b>{n}u</b><span>on the line</span></div></div>'
+        f'<div class="hm-sum-bar">{seg(c3, "#ffd97a")}{seg(c2, "#4ae0aa")}{seg(c1, "#7fb4ff")}</div>'
+        f'<div class="hm-sum-leg"><em>★★★ {c3} · ★★ {c2} · ★ {c1}</em>'
+        f'<em>{first}' + (f' → {last}' if last and last != first else '') + '</em></div></div>')
+
+
+def hm_share_text(df, day, min_stars=1):
+    try:
+        dl = pd.to_datetime(str(day)).strftime("%a %-m/%-d")
+    except Exception:
+        dl = str(day)
+    lines = [f"Sunday Edge · {dl}"]
+    x = df[df["_conf"] >= min_stars].sort_values(["_kt", "_conf"], ascending=[True, False])
+    last = None
+    for _, r in x.iterrows():
+        k = hm_kick(r)
+        t = k.strftime("%-I:%M %p") if k is not None else "TBD"
+        if t != last:
+            lines += ["", t]
+            last = t
+        lab = hm_label(r)
+        if str(r.get("market_type", "")).upper() == "TOTAL":
+            lab += f" ({r.get('away_team')}/{r.get('home_team')})"
+        lines.append(f"{'★' * int(r['_conf']):<3} {lab}")
+    lines += ["", f"{len(x)} plays · 1u each"]
+    return "\n".join(lines)
+
+
+HM_CSS = """<style>
+.hm-sec{font-size:.6rem;letter-spacing:.16em;color:#7f97ae;font-weight:800;margin:14px 2px 8px}
+.hm-sum{margin:4px 0 18px;padding:14px 14px 12px;border-radius:18px;
+  background:radial-gradient(120% 140% at 0% 0%,rgba(59,130,246,.22),transparent 55%),
+  radial-gradient(120% 140% at 100% 100%,rgba(74,224,170,.14),transparent 55%),rgba(10,22,38,.85);
+  border:1px solid rgba(120,154,188,.18)}
+.hm-sum-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;text-align:center}
+.hm-sum-grid b{display:block;font-size:1.25rem;font-weight:900;color:#f2f7fc;line-height:1.1}
+.hm-sum-grid b.g{color:#ffd97a;text-shadow:0 0 14px rgba(255,200,90,.55)}
+.hm-sum-grid span{display:block;font-size:.52rem;letter-spacing:.14em;font-weight:800;color:#7f97ae;
+  margin-top:4px;text-transform:uppercase}
+.hm-sum-bar{display:flex;gap:3px;height:6px;margin:13px 2px 6px}
+.hm-sum-bar i{border-radius:99px}
+.hm-sum-leg{display:flex;justify-content:space-between;font-size:.58rem;color:#71879d;font-weight:700}
+.hm-sum-leg em{font-style:normal}
+.hm-hero{position:relative;overflow:hidden;border-radius:17px;padding:15px 15px 8px;
+  background:linear-gradient(180deg,rgba(47,107,255,.17),rgba(12,26,44,.62));
+  border:1px solid rgba(47,107,255,.36)}
+.hm-hero.t3{border-color:rgba(255,217,122,.55);box-shadow:0 18px 50px -18px rgba(255,190,70,.45)}
+.hm-hero.t2{border-color:rgba(74,224,170,.45);box-shadow:0 18px 50px -20px rgba(74,224,170,.35)}
+.hm-hero-top{display:flex;align-items:center;gap:13px}
+.hm-hero-copy{flex:1;min-width:0}
+.hm-hero-copy b{display:block;font-size:1.18rem;color:#fff;font-weight:900}
+.hm-hero-copy small{display:block;font-size:.72rem;color:#9db4cb;margin-top:2px}
+.hm-hero-meta{margin-top:6px;font-size:.7rem;color:#8fa6bd;font-weight:600;display:flex;
+  flex-wrap:wrap;gap:4px 14px}
+.hm-hero-meta b{display:inline;font-size:.8rem;color:#dbe7f5}
+.hm-hero-meta .soon{color:#f2c14e;font-weight:800}
+.hm-hero-stars{text-align:right}
+.hm-hero-stars b{display:block;font-size:1.24rem}
+.hm-hero.t3 .hm-hero-stars b{color:#ffd97a;text-shadow:0 0 18px rgba(255,200,90,.6)}
+.hm-hero.t2 .hm-hero-stars b{color:#4ae0aa}
+.hm-hero.t1 .hm-hero-stars b{color:#7fb4ff}
+.hm-hero-stars span{font-size:.52rem;letter-spacing:.13em;color:#7f97ae;text-transform:uppercase}
+.hm-viz{padding:10px 8px 4px;border-radius:14px;background:rgba(12,26,44,.5);
+  border:1px solid rgba(120,154,188,.12)}
+.hm-head{display:flex;align-items:center;gap:8px;margin:20px 2px 6px}
+.hm-head span{font-size:.62rem;letter-spacing:.2em;font-weight:900;color:#9fb3c8}
+.hm-head.live span{color:#4ae0aa}
+.hm-head i{flex:1;height:1px;background:linear-gradient(90deg,rgba(120,154,188,.35),transparent)}
+.hm-head em{font-style:normal;font-size:.62rem;font-weight:800;color:#7f97ae;padding:2px 8px;
+  border-radius:999px;border:1px solid rgba(120,154,188,.2)}
+.hm-row{--tc:#7fb4ff;display:flex;align-items:center;gap:10px;padding:9px 10px 9px 12px;
+  border-bottom:1px solid rgba(120,154,188,.08);position:relative}
+.hm-row::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:2px;
+  border-radius:2px;background:var(--tc);opacity:.8}
+.hm-row.t3{--tc:#ffd97a}.hm-row.t2{--tc:#4ae0aa}
+.hm-row-time{flex:0 0 40px;font-size:.78rem;font-weight:800;color:#c9d6e4;display:flex;
+  flex-direction:column;line-height:1.1}
+.hm-row.soon .hm-row-time{color:#ffd97a}.hm-row.live .hm-row-time{color:#4ae0aa}
+.hm-row-time i{font-style:normal;font-size:.55rem;font-weight:900;margin-top:3px;width:16px;
+  text-align:center;border-radius:4px;color:#06170f}
+.hm-row-time i.won{background:#4ae0aa}.hm-row-time i.lost{background:#d9506a;color:#fff}
+.hm-row-time i.push{background:#f2c14e}
+.hm-row-logo{flex:0 0 auto;display:flex}
+.hm-row-main{flex:1;min-width:0}
+.hm-row-main b{display:block;font-size:.86rem;font-weight:800;color:#eef4fb;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.hm-row-main small{display:block;font-size:.62rem;color:#71879d;margin-top:1px}
+.hm-row-side{flex:0 0 auto;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.hm-row-side em{font-style:normal;font-size:.5rem;font-weight:900;letter-spacing:.1em;color:#7f97ae;
+  border:1px solid rgba(120,154,188,.3);border-radius:4px;padding:1px 4px}
+.hm-row-stars{font-size:.72rem;color:var(--tc);min-width:40px;text-align:right;white-space:nowrap}
+.hm-row-gap{flex:0 0 30px;text-align:right;font-size:.78rem;font-weight:800;color:#dfe8f2}
+.hm-lv{margin:-4px 0 6px 12px;padding:8px 10px 9px;border-radius:12px;
+  background:rgba(74,224,170,.06);border:1px solid rgba(74,224,170,.18)}
+.hm-lv-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.hm-lv-sc{font-size:.7rem;color:#9fb3c8}
+.hm-lv-sc b{color:#f2f7fc;font-size:.82rem;font-weight:900}
+.hm-lv-ck{font-size:.6rem;font-weight:900;letter-spacing:.1em;color:#4ae0aa}
+.hm-lv-bar{position:relative;height:6px;border-radius:99px;margin:8px 0 6px;background:rgba(120,154,188,.16)}
+.hm-lv-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:99px}
+.hm-lv-bar em{position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:rgba(220,230,240,.35)}
+.hm-lv-bot{display:flex;align-items:baseline;gap:6px;font-size:.66rem;font-weight:700}
+.hm-lv-bot span{flex:1}.hm-lv-bot b{font-size:.9rem;font-weight:900}
+.hm-lv-bot small{font-size:.56rem;color:#71879d;letter-spacing:.08em;text-transform:uppercase}
+</style>"""
+
+
+def render_home(sched):
+    st.markdown(HM_CSS, unsafe_allow_html=True)
+    now = pd.Timestamp.now(tz="America/New_York")
+    tr = load_tracker()
+    try:
+        tr, _ = grade(tr, sched)   # results show up here, not only in Tracker
+    except Exception:
+        pass
+    if tr is None or tr.empty:
+        st.info("No bets frozen yet. Build a card on the Slate tab and tap Freeze.")
+        return
+    bets = tr[tr["bet_tier"].astype(str).str.upper().isin(list(BET_TIERS))].copy()
+    if bets.empty:
+        st.info("No bets frozen yet. Build a card on the Slate tab and tap Freeze.")
+        return
+    bets["_k"] = [hm_kick(r) for _, r in bets.iterrows()]
+    bets["_day"] = [k.strftime("%Y-%m-%d") if k is not None else "" for k in bets["_k"]]
+    today = now.strftime("%Y-%m-%d")
+    days = sorted(d for d in bets["_day"].unique() if d)
+    future = [d for d in days if d >= today][:4]
+    past = sorted([d for d in days if d < today], reverse=True)
+    quick = future + (["__past__"] if past else [])
+    if not quick:
+        st.info("No bets frozen for this week yet.")
+        return
+    cnt = lambda d: int((bets["_day"] == d).sum())
+
+    def lbl(d):
+        if d == "__past__":
+            return "Past"
+        if d == today:
+            return f"Today · {cnt(d)}"
+        return f"{pd.to_datetime(d):%a %-m/%-d} · {cnt(d)}"
+
+    pick = st.radio("Card date", quick, format_func=lbl, horizontal=True,
+                    key="hm_pick", label_visibility="collapsed")
+    day = (st.selectbox("Past card", past, key="hm_past",
+                        format_func=lambda d: f"{pd.to_datetime(d):%a, %b %-d} · {cnt(d)} bets")
+           if pick == "__past__" else pick)
+
+    df = bets[bets["_day"] == day].copy()
+    df["_conf"] = [row_confidence(r) for _, r in df.iterrows()]
+    df["_st"] = [hm_state(r, now) for _, r in df.iterrows()]
+    df["_kt"] = [k.timestamp() if k is not None else float("inf") for k in df["_k"]]
+    df["_gap"] = [hm_lines(r)[2] if pd.notna(r.get("model_line")) else 0 for _, r in df.iterrows()]
+    df = df.sort_values(["_kt", "_conf", "_gap"], ascending=[True, False, False])
+
+    st.markdown(hm_summary_html(df), unsafe_allow_html=True)
+
+    up = df[df["_st"] == "up"]
+    hero, hero_lbl = (up.iloc[0], "NEXT UP") if not up.empty else \
+        (df.sort_values("_conf", ascending=False, kind="stable").iloc[0], "BEST PLAY")
+    lvh = int(hero["_conf"])
+    cd, cst = hm_countdown(hero, now)
+    try:
+        fa, mk, gap, is_tot = hm_lines(hero)
+        f_ = (lambda v: f"{v:.1f}") if is_tot else (lambda v: f"{v:+.1f}")
+        meta = (f'<span>model <b>{f_(fa)}</b></span><span>mkt <b>{f_(mk)}</b></span>'
+                f'<span><b>{math.floor(gap*10)/10:.1f} pts</b> off</span>')
+    except Exception:
+        meta = ""
+    k = hero["_k"]
+    meta += (f'<span><b>{k:%-I:%M %p}</b></span>' if k is not None else "") + \
+        f'<span class="{cst}">{cd}</span>'
+    st.markdown(
+        f'<div class="hm-sec">{hero_lbl}</div>'
+        f'<div class="hm-hero t{lvh}"><div class="hm-hero-top">{hm_pick_logo(hero, 46)}'
+        f'<div class="hm-hero-copy"><b>{_html.escape(hm_label(hero))}</b>'
+        f'<small>{_html.escape(str(hero.get("matchup", "")))}</small>'
+        f'<div class="hm-hero-meta">{meta}</div></div>'
+        f'<div class="hm-hero-stars"><b>{"★" * lvh}</b><span>{CONF_NAME.get(lvh, "")}</span></div>'
+        f'</div><div style="margin-top:10px">{hm_gap_bar_svg(hero)}</div></div>',
+        unsafe_allow_html=True)
+
+    tl = hm_timeline_svg(df, now, day)
+    if tl:
+        nm = "TODAY" if day == today else pd.to_datetime(day).strftime("%A").upper()
+        st.markdown(f'<div class="hm-sec" style="margin-top:18px">{nm} AT A GLANCE</div>'
+                    f'<div class="hm-viz">{tl}</div>', unsafe_allow_html=True)
+
+    rest = df.drop(index=hero.name)
+    live = rest[rest["_st"] == "live"]
+    if hero["_st"] == "live":
+        live = pd.concat([df.loc[[hero.name]], live])
+    upr = rest[rest["_st"] == "up"]
+    done = rest[rest["_st"] == "done"]
+    near = upr[upr["_kt"] <= now.timestamp() + 3 * 3600]
+    if near.empty and not upr.empty:
+        near = upr[upr["_kt"] <= float(upr["_kt"].iloc[0]) + 90 * 60]
+    near = near.head(8)
+    later = upr.drop(index=near.index)
+    head = lambda t, n, c="": f'<div class="hm-head {c}"><span>{t}</span><i></i><em>{n}</em></div>'
+    rows = lambda d: "".join(hm_row_html(r, now) for _, r in d.iterrows())
+
+    st.markdown('<div style="margin:14px 2px -2px;font-size:.66rem;color:#71879d">'
+                'Right side: stars, then points off the market.</div>', unsafe_allow_html=True)
+    if not live.empty:
+        def _live_block(_lv=live):
+            sb = hm_live_scores()
+            _n = pd.Timestamp.now(tz="America/New_York")
+            out = [head("● LIVE NOW", len(_lv), "live")]
+            for _, r in _lv.iterrows():
+                out.append(hm_row_html(r, _n))
+                out.append(hm_live_html(r, sb.get((canon(r.get("away_team")),
+                                                   canon(r.get("home_team"))))))
+            st.markdown("".join(out), unsafe_allow_html=True)
+            if sb:
+                st.caption("Live odds: the market's expectation for the time left, "
+                           "not a model edge. Updates every minute.")
+        frag = getattr(st, "fragment", None)
+        try:
+            frag(run_every=60)(_live_block)() if frag else _live_block()
+        except Exception:
+            _live_block()
+    if not near.empty:
+        st.markdown(head("COMING UP", len(near)) + rows(near), unsafe_allow_html=True)
+    if not later.empty:
+        n3 = int((later["_conf"] == 3).sum())
+        with st.expander(f"See all bets · {len(later)} more later"
+                         + (f" · {n3} ★★★" if n3 else "")):
+            st.markdown(rows(later), unsafe_allow_html=True)
+    if not done.empty:
+        with st.expander(f"Earlier · {len(done)} finished"):
+            st.markdown(rows(done), unsafe_allow_html=True)
+
+    with st.expander("\U0001F4F2 Text the picks"):
+        which = st.radio("Which plays", ["All", "★★ and up", "★★★ only"],
+                         horizontal=True, key="hm_share_which", label_visibility="collapsed")
+        txt = hm_share_text(df, day, {"All": 1, "★★ and up": 2}.get(which, 3))
+        st.code(txt, language=None)
+        st.caption("Tap the copy icon on the box, or send it straight to Messages.")
+        try:
+            from urllib.parse import quote as _q
+            st.link_button("Open in Messages", "sms:&body=" + _q(txt), use_container_width=True)
+        except Exception:
+            pass
+
+    g = df[df["result"].astype(str).str.upper().isin(["WIN", "LOSS"])]
+    allg = bets[bets["result"].astype(str).str.upper().isin(["WIN", "LOSS"])].copy()
+    if not allg.empty:
+        allg["_conf"] = [row_confidence(r) for _, r in allg.iterrows()]
+        res = allg["result"].astype(str).str.upper()
+        units = pd.to_numeric(allg["units_result"], errors="coerce").fillna(0)
+        bars = []
+        for lv_, nm_ in ((3, "High"), (2, "Medium"), (1, "Low")):
+            m = allg["_conf"] == lv_
+            w_, l_ = int(((res == "WIN") & m).sum()), int(((res == "LOSS") & m).sum())
+            if w_ + l_ == 0:
+                continue
+            pct, c = w_ / (w_ + l_), HM_COL[lv_]
+            bars.append(
+                f'<div style="display:flex;align-items:center;gap:10px;padding:6px 0">'
+                f'<span style="flex:0 0 44px;color:{c};font-size:.8rem">{"★" * lv_}</span>'
+                f'<div style="flex:1;position:relative;height:8px;border-radius:99px;'
+                f'background:rgba(120,154,188,.14)"><i style="position:absolute;left:0;top:0;'
+                f'bottom:0;width:{pct*100:.1f}%;border-radius:99px;background:{c};'
+                f'box-shadow:0 0 12px {c}"></i><em style="position:absolute;left:52.4%;top:-4px;'
+                f'bottom:-4px;width:2px;background:#f2c14e"></em></div>'
+                f'<b style="flex:0 0 36px;text-align:right;color:#eef4fb">{pct*100:.0f}%</b>'
+                f'<span style="flex:0 0 92px;text-align:right;font-size:.66rem;color:#8ea4ba">'
+                f'{w_}-{l_} · {float(units[m].sum()):+.1f}u</span></div>')
+        if bars:
+            st.markdown('<div class="hm-sec" style="margin-top:20px">DO THE STARS WORK?</div>'
+                        '<div style="padding:12px 14px;border-radius:14px;background:rgba(12,26,44,.6);'
+                        'border:1px solid rgba(120,154,188,.13)">' + "".join(bars) + '</div>',
+                        unsafe_allow_html=True)
+            st.caption("Win rate by star level against the 52.4% you need at -110.")
+
+
+tab_home, tab_slate, tab_game, tab_tracker = st.tabs(["Home", "Slate", "Game", "Tracker"])
+
+with tab_home:
+    try:
+        render_home(sched_all)
+    except Exception as _he:
+        st.warning(f"Home could not load: {str(_he)[:160]}")
 
 with tab_slate:
     seasons = sorted(sched_all["season"].unique())
@@ -4928,11 +5603,13 @@ with tab_tracker:
 
         with st.expander("Details: each level, leans, every bet"):
             st.caption(
-                f"**\u2605\u2605\u2605 High** = the math says a clear winner "
-                f"({HIGH_COVER:.0%}+ to cover). **\u2605\u2605 Medium** = a "
-                f"smaller edge the math backs, or a spread "
-                f"{MED_GAP_PTS:g}+ off. **\u2605 Low** = a spread "
-                f"{LEAN_GAP_PTS:g}\u2013{MED_GAP_PTS:g} off. **Leans** "
+                f"**\u2605\u2605\u2605 High** = a bet where at least half the "
+                f"edge comes from the parts that tested significant on their "
+                f"own (weather, QB, injuries). **\u2605\u2605 Medium** = a bet "
+                f"whose edge comes mostly from the base power rating, which did "
+                f"not beat the close in backtest. **\u2605 Low** = a lean "
+                f"(a spread {LEAN_GAP_PTS:g}+ off that does not beat the vig). "
+                f"Bets frozen before v1.5 keep the old rule. **Leans** "
                 f"= not bets: spreads {WATCH_SPREAD_GAP:g}\u2013"
                 f"{LEAN_GAP_PTS:g} off and totals {MIN_GAP_PTS:g}+ off, tracked "
                 f"to see whether weaker leans mean anything. **Average result "
