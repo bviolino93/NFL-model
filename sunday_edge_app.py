@@ -1371,7 +1371,10 @@ CARRYOVER     = 1.00
 # week 7 87%, full around week 9. Faster than the old linear ramp (full at
 # 160 games), chosen by preference rather than backtest, so it is part of
 # the model version.
-IN_SEASON_FULL_GAMES = 128
+IN_SEASON_FULL_GAMES = 80   # v1.6: was 128. Full current-season weight after
+#   ~Week 6 instead of ~Week 9, at the owner's request. Backtested 2019-2025,
+#   weeks 7-18: weight +0.047 (t=+0.53) vs +0.052 (t=+0.58) at 128 -- no
+#   measurable difference either way. The version string carries r80.
 WINDOW_GAMES  = 320
 
 # Residual SDs measured on 4,254 games, 2007-2025. These convert a point
@@ -1459,21 +1462,17 @@ SHOWN_TIERS = ("OFFICIAL", "LEAN", "WATCH")
 HIGH_COVER = 0.55
 MED_GAP_PTS = 5.0
 PROVEN_SHARE_HIGH = 0.5
+# v1.7: spread the stars like Saturday Edge (~15% High, ~70% Medium, ~15%
+# Low). Cutoffs are the 15th/85th percentiles of the raw gap among 4+ point
+# bets, simulated on 2023-2025 (420 bets): 4.5 and 8.5 points. Proven
+# information (weather/QB/injury) still earns High on its own.
+STAR1_GAP = 4.5
+STAR3_GAP = 8.5
 CONF_NAME = {3: "High", 2: "Medium", 1: "Low", 0: "Not a bet"}
 
 
 def confidence(tier, cover_prob=None, gap=None, proven_share=None):
     tier = str(tier or "").upper()
-    try:
-        ps = float(proven_share)
-    except (TypeError, ValueError):
-        ps = float("nan")
-    if math.isfinite(ps):
-        if tier == "OFFICIAL":
-            return 3 if ps >= PROVEN_SHARE_HIGH else 2
-        if tier == "LEAN":
-            return 1
-        return 0
     try:
         p = float(cover_prob)
     except (TypeError, ValueError):
@@ -1482,6 +1481,19 @@ def confidence(tier, cover_prob=None, gap=None, proven_share=None):
         g = float(gap)
     except (TypeError, ValueError):
         g = float("nan")
+    try:
+        ps = float(proven_share)
+    except (TypeError, ValueError):
+        ps = float("nan")
+    if math.isfinite(ps):
+        if tier not in ("OFFICIAL", "LEAN"):
+            return 0
+        if ps >= PROVEN_SHARE_HIGH or (math.isfinite(g) and g >= STAR3_GAP):
+            return 3
+        if tier == "LEAN" and math.isfinite(g) and g < STAR1_GAP:
+            return 1
+        return 2
+    # Rows frozen before v1.5 (no proven_share): the original rule.
     if tier == "OFFICIAL":
         return 3 if p >= HIGH_COVER else 2
     if tier == "LEAN":
@@ -5261,10 +5273,13 @@ with tab_slate:
                 except Exception:
                     pass
                 _c = r.get("confidence", row_confidence(r))
-                _tag = (stars(_c) + " ") if _c else "Lean \u00b7 "
+                _tag = (stars(_c) + " ") if _c else "Watch \u00b7 "
+                # "(-110) @ consensus" on every row was noise; the price and
+                # book show only when they are not the default.
+                _lab = str(r["pick_label"]).replace(" (-110) @ consensus", "")
                 _h.append(
                     f'<div class="sc-row"><div class="sc-rank">{i}</div>'
-                    f'<div class="sc-main"><b>{_html.escape(_tag + str(r["pick_label"]))}</b>'
+                    f'<div class="sc-main"><b>{_html.escape(_tag + _lab)}</b>'
                     f'<small>{_html.escape(str(r["matchup"]))}'
                     f'{" \u00b7 " + _html.escape(kick) if kick else ""}</small></div>'
                     f'<div class="sc-num"><b>{odds:+d}</b>'
@@ -5284,7 +5299,7 @@ with tab_slate:
                 _ld = _ld.assign(_g=(pd.to_numeric(_ld["model_line"], errors="coerce")
                                      - pd.to_numeric(_ld["bet_line"], errors="coerce")).abs())
                 _ln = list(_ld.sort_values("_g", ascending=False).iterrows())
-        _blk("Leans", _ln)
+        _blk("Watch list \u00b7 not bets", _ln)
         if _mo:
             _h.append('<div class="sc-grp">Moneyline</div>')
             for i, f in enumerate(_mo[:4], start=1):
@@ -5297,7 +5312,7 @@ with tab_slate:
 
         _h.append(
             f'<div class="sc-foot">Sunday Edge \u00b7 '
-            f'bets first, most confident first. Leans are not bets. '
+            f'bets first, most confident first. The watch list is not bets. '
             f'Stars are information; stake stays flat.'
             f'</div></div>')
         st.markdown("".join(_h), unsafe_allow_html=True)
@@ -5647,13 +5662,13 @@ with tab_tracker:
 
         with st.expander("Details: each level, leans, every bet"):
             st.caption(
-                f"**\u2605\u2605\u2605 High** = a bet where at least half the "
-                f"edge comes from the parts that tested significant on their "
-                f"own (weather, QB, injuries). **\u2605\u2605 Medium** = a bet "
-                f"whose edge comes mostly from the base power rating, which did "
-                f"not beat the close in backtest. **\u2605 Low** = a lean "
-                f"(a spread {LEAN_GAP_PTS:g}+ or total {LEAN_TOTAL_GAP_PTS:g}+ off "
-                f"that does not beat the vig). "
+                f"**\u2605\u2605\u2605 High** = at least half the edge comes from "
+                f"the parts that tested significant (weather, QB, injuries), or "
+                f"the model is {STAR3_GAP:g}+ points off. **\u2605\u2605 Medium** = "
+                f"{STAR1_GAP:g}\u2013{STAR3_GAP:g} off, or any bet that beats the vig. "
+                f"**\u2605 Low** = a lean under {STAR1_GAP:g} off. Spread to match "
+                f"Saturday Edge (~15% / 70% / 15%); big gaps alone have not "
+                f"tested as better. "
                 f"Bets frozen before v1.5 keep the old rule. **Leans** "
                 f"= not bets: spreads {WATCH_SPREAD_GAP:g}\u2013"
                 f"{LEAN_GAP_PTS:g} off, tracked "
