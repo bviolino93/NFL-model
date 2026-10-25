@@ -18,6 +18,9 @@ name: Picks
 
 on:
   schedule:
+    # GitHub can start scheduled runs hours late (the 15:00 run on
+    # 2026-10-25 began at 18:13), so Sunday gets an earlier run as well.
+    - cron: "30 13 * 9-12,1-2 0"   # Sunday 13:30 UTC
     - cron: "0 15 * 9-12,1-2 0"    # Sunday 15:00 UTC, before the early games
     - cron: "0 19 * 9-12,1-2 4"    # Thursday 19:00 UTC
     - cron: "0 20 * 9-12,1-2 1"    # Monday 20:00 UTC
