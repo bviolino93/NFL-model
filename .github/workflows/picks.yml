@@ -12,7 +12,8 @@ name: Picks
 # nflverse final scores; each run reads it back and adds to it.
 #
 # Needs repository secret ODDS_API_KEY. Optional repository variable
-# MY_BOOKS, e.g. "draftkings,fanduel", to only suggest books you can use.
+# MY_BOOKS to change which books bets are placed at (default
+# "draftkings,fanduel"; every book still informs the fair line).
 # Each run costs ~6 Odds API credits (us + eu regions, 3 markets).
 
 on:
@@ -65,7 +66,7 @@ jobs:
       - name: Run picks
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          MY_BOOKS: ${{ vars.MY_BOOKS }}
+          MY_BOOKS: ${{ vars.MY_BOOKS || 'draftkings,fanduel' }}
         run: |
           python picks.py --out site/index.html --json site/picks.json \
             --md site/README.md --history site/history.json --paper site/paper.json --bankroll "${{ inputs.bankroll || '1000' }}"
