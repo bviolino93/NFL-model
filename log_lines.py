@@ -62,7 +62,7 @@ def _rows(event, snap):
                     "outcome": oc.get("name"),
                     # Props put the player in `description`.
                     "player": oc.get("description", ""),
-                    "point": oc.get("point", ""),
+                    "point": oc.get("point"),
                     "price": oc.get("price"),
                     "last_update": mk.get("last_update", bk.get("last_update")),
                 }
