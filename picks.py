@@ -165,10 +165,94 @@ RATINGS_SPREAD_WEIGHT = 0.2
 RATINGS_SPREAD_CAP = 1.0      # points; keeps win chances near the backtest
 
 
+def _nick(team: str) -> str:
+    return str(team).split()[-1]
+
+
+def _last(name) -> str | None:
+    """Surname, skipping suffixes: Michael Penix Jr. -> Penix."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    w = [x for x in name.split()
+         if x.rstrip(".").lower() not in {"jr", "sr", "ii", "iii", "iv"}]
+    return w[-1] if w else None
+
+
+def explain_spread(p, m: dict) -> str:
+    """The model's case for a spread bet: what it thinks happens, and the
+    matchup pieces pushing that way (each in points)."""
+    side = 1 if p.pick == p.home else -1
+    me, opp = _nick(p.pick), _nick(p.away if side > 0 else p.home)
+    mine = side * m["margin"]                 # model margin for our side
+    line = float(p.point)                     # e.g. +4.5 or -3
+    room = mine + line
+    if mine >= 0:
+        call = f"The model has the {me} winning by {mine:.1f}"
+    else:
+        call = f"The model has the {me} losing by only {-mine:.1f}"
+    if line > 0:
+        lose = (f"more than {line:g}" if line == int(line)
+                else f"{int(line) + 1} or more")
+        call += (f", and they're getting {line:g}, so they cover unless "
+                 f"they lose by {lose} ({room:.1f} pts of room).")
+    else:
+        call += (f", {room:.1f} more than the {-line:g} they're giving.")
+    parts = []
+    if "pass_off" in m:
+        qb_me = _last(m["home_qb"] if side > 0 else m["away_qb"])
+        qb_opp = _last(m["away_qb"] if side > 0 else m["home_qb"])
+        qb_txt = (f"{qb_me} over {qb_opp} at quarterback" if qb_me and qb_opp
+                  else "their quarterback")
+        names = {"qb": qb_txt,
+                 "pass_off": "their passing game",
+                 "run_off": "their running game",
+                 "pass_def": "their pass defense",
+                 "run_def": "their run defense",
+                 "hfa": "home field" if side > 0 else None}
+        for k, label in names.items():
+            v = side * m[k]
+            if label and v >= 0.5:
+                parts.append((v, f"{label} (+{v:.1f})"))
+    inj = side * m["injuries"]
+    if inj >= 0.5:
+        parts.append((inj, f"the injury report (+{inj:.1f})"))
+    parts.sort(reverse=True)
+    why = [call]
+    if parts:
+        why.append("Where the edge comes from: "
+                   + ", ".join(t for _, t in parts[:4]) + ".")
+    against = []
+    if "pass_off" in m:
+        qb_opp = _last(m["away_qb"] if side > 0 else m["home_qb"])
+        cons = {"qb": f"{qb_opp} at quarterback" if qb_opp else "quarterback",
+                "pass_off": "passing game", "run_off": "running game",
+                "pass_def": "pass defense", "run_def": "run defense",
+                "hfa": "home field"}
+        whose = f"the {opp}' " if opp.endswith("s") else f"the {opp}'s "
+        against = [(-side * m[k], (whose if k != "qb" or not qb_opp
+                                   else "") + v)
+                   for k, v in cons.items() if -side * m[k] >= 1.0]
+    if -inj >= 1.0:
+        against.append((-inj, "the injury report"))
+    if against:
+        against.sort(reverse=True)
+        why.append("Working against it: " + ", ".join(
+            f"{t} ({v:.1f})" for v, t in against[:2]) + ".")
+    return " ".join(why)
+
+
 def explain_pick(p, ctx: dict) -> str:
-    """Why this bet: the market gap, then only the factors pointing its way."""
+    """Why this bet: the model's own case where it has one, else the gap
+    between this book and the sharp books."""
     why = []
-    if "market" in str(p.sources).split(","):
+    c = ctx.get(p.home, {})
+    m = c.get("ratings")
+    side = 1 if p.pick == p.home else -1
+    rated = (p.market == "spreads" and "ratings" in str(p.sources) and m
+             and side * (m["margin"] - p.fair_market) > 0)
+    if rated:
+        why.append(explain_spread(p, m))
+    elif "market" in str(p.sources).split(","):
         if p.market == "totals":
             fv = f"put the total at {p.fair_market:.1f}"
         else:
@@ -176,19 +260,6 @@ def explain_pick(p, ctx: dict) -> str:
             fv = f"make {fav} a {abs(p.fair_market):.1f}-point favorite"
         why.append(f"{BOOK_NAME.get(p.book, p.book)} hasn't caught up with "
                    f"the sharp books, which {fv}.")
-    c = ctx.get(p.home, {})
-    m = c.get("ratings")
-    side = 1 if p.pick == p.home else -1
-    if p.market == "spreads" and "ratings" in str(p.sources) and m and \
-            side * (m["margin"] - p.fair_market) > 0:
-        mine = p.home if m["margin"] >= 0 else p.away
-        mkt = p.home if p.fair_market >= 0 else p.away
-        inj = m["injuries"]
-        hurt = (f" Injuries account for {abs(inj):.1f} pts of that."
-                if abs(inj) >= 0.5 and side * inj > 0 else "")
-        why.append(f"Team ratings have {mine} by {abs(m['margin']):.1f}; "
-                   f"the sharp books have {mkt} by "
-                   f"{abs(p.fair_market):.1f}.{hurt}")
     if p.market == "totals":
         toward = -1 if str(p.pick).lower() == "under" else 1
         if "combined" in str(p.sources) and "why_total" in c:

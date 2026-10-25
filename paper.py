@@ -25,9 +25,9 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-from backtest import calibrate, project
+from backtest import calibrate, home_field_before, project
 from nfl_data import fix_starters, load_games, load_team_games
-from nfl_power import PowerConfig
+from nfl_power import PLAYS_PER_GAME, PowerConfig, fit_power
 
 GAP = 3.0
 # Only lines seen this far ahead of kickoff count as early; anything later
@@ -100,15 +100,54 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
         return (0.0, 0.0) if r.empty else (float(r.off.iloc[-1]),
                                            float(r["def"].iloc[-1]))
 
+    cfg = PowerConfig()
+    fits = {}
     out = {}
     for r in fr.itertuples():
         ho, hd = load_for(r.home, r.week)
         ao, ad = load_for(r.away, r.week)
         inj = INJ_OFF_PTS * (ho - ao) + INJ_DEF_PTS * (hd - ad)
-        out[want[r.game_id]] = {"ratings": float(r.model_margin),
-                                "injuries": float(inj),
-                                "margin": float(r.model_margin + inj)}
+        row = {"ratings": float(r.model_margin), "injuries": float(inj),
+               "margin": float(r.model_margin + inj)}
+        try:
+            if (r.season, r.week) not in fits:
+                fits[r.season, r.week] = fit_power(
+                    tg, int(r.season), int(r.week),
+                    home_field_before(games, r.season, r.week), cfg)
+            g = games[games.game_id == r.game_id].iloc[0]
+            row.update(breakdown(fits[r.season, r.week], g, r, cfg))
+        except Exception as exc:
+            print(f"no breakdown for {r.game_id}: {exc}")
+        out[want[r.game_id]] = row
     return out
+
+
+def breakdown(pr, g, r, cfg: PowerConfig) -> dict:
+    """Where the ratings' home margin comes from, in calibrated points:
+    each offense against the other's defense (passing and rushing, with
+    the starting QB split out), plus home field. The parts add up to
+    `ratings`."""
+    h, a = r.home, r.away
+    p = cfg.pass_rate
+
+    def qb(team, qid):
+        qid = qid if isinstance(qid, str) else None
+        return pr.qb_value(qid, team) if cfg.use_qb else 0.0
+
+    k = (r.model_margin - r.hfa) / r.model_edge if abs(r.model_edge) > 1e-6 \
+        else 0.0
+    pts = PLAYS_PER_GAME * k
+    return {
+        "hfa": float(r.hfa),
+        # home team's edge from the offenses and from the defenses
+        "pass_off": pts * p * (pr.db_off.get(h, 0) - pr.db_off.get(a, 0)),
+        "run_off": pts * (1 - p) * (pr.ru_off.get(h, 0) - pr.ru_off.get(a, 0)),
+        "pass_def": pts * p * (pr.db_def.get(a, 0) - pr.db_def.get(h, 0)),
+        "run_def": pts * (1 - p) * (pr.ru_def.get(a, 0) - pr.ru_def.get(h, 0)),
+        "qb": pts * p * (qb(h, g.home_qb_id) - qb(a, g.away_qb_id)),
+        "home_qb": g.home_qb_name if isinstance(g.home_qb_name, str) else None,
+        "away_qb": g.away_qb_name if isinstance(g.away_qb_name, str) else None,
+    }
 
 
 def log(history: list[dict], fair: dict, margins: dict, run: str) -> list:

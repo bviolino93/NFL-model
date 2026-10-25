@@ -214,18 +214,26 @@ def fix_starters(games: pd.DataFrame, cache_dir: str = CACHE_DIR
     last = r.sort_values("week").drop_duplicates("gsis_id", keep="last")
     active = set(last.loc[last["status"] == "ACT", "gsis_id"])
     played = g[~todo]
+    named = "home_qb_name" in g.columns
+    cols = ["qb_id", "qb_name"] if named else ["qb_id"]
     long = pd.concat([
-        played[["season", "week", f"{s}_team", f"{s}_qb_id"]]
-        .set_axis(["season", "week", "team", "qb"], axis=1)
+        played[["season", "week", f"{s}_team"] + [f"{s}_{c}" for c in cols]]
+        .set_axis(["season", "week", "team"] + cols, axis=1)
         for s in ("home", "away")]).sort_values(["season", "week"])
-    recent = long.groupby("team")["qb"].last().to_dict()
+    recent = long.groupby("team")[cols].last()
     for side in ("home", "away"):
         col = f"{side}_qb_id"
         for i in g.index[todo]:
             q = g.at[i, col]
             if isinstance(q, str) and q not in active:
-                alt = recent.get(g.at[i, f"{side}_team"])
-                g.at[i, col] = alt if alt in active and alt != q else np.nan
+                team = g.at[i, f"{side}_team"]
+                alt = recent.at[team, "qb_id"] if team in recent.index \
+                    else None
+                ok = alt in active and alt != q
+                g.at[i, col] = alt if ok else np.nan
+                if named:
+                    g.at[i, f"{side}_qb_name"] = \
+                        recent.at[team, "qb_name"] if ok else np.nan
     return g
 
 
