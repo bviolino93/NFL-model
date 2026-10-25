@@ -95,6 +95,12 @@ def fetch_rows(key: str, regions: str = "us,eu") -> pd.DataFrame:
     r = requests.get(ODDS_URL, params={
         "apiKey": key, "regions": regions, "markets": "spreads,totals,h2h",
         "oddsFormat": "american"}, timeout=30)
+    if r.status_code == 401:
+        raise SystemExit(
+            f"The Odds API rejected the key (401). It is {len(key)} "
+            "characters long; a key is normally 32. Re-save the "
+            "ODDS_API_KEY secret with just the key, no quotes or spaces, "
+            "and check the plan has credits left at the-odds-api.com.")
     r.raise_for_status()
     print(f"odds: {len(r.json())} events, credits left "
           f"{r.headers.get('x-requests-remaining')}")
@@ -285,7 +291,11 @@ def main():
     if a.lines_csv:
         rows = sel.latest_snapshot(pd.read_csv(a.lines_csv))
     else:
-        key = os.environ.get("ODDS_API_KEY")
+        # Pasted secrets often carry a newline, spaces or the quotes from a
+        # TOML line (odds_api_key = "..."); none of those are part of a key.
+        key = (os.environ.get("ODDS_API_KEY") or "").strip().strip('"\'')
+        if "=" in key:
+            key = key.split("=", 1)[1].strip().strip('"\'')
         if not key:
             raise SystemExit("set ODDS_API_KEY")
         rows = fetch_rows(key)
