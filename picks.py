@@ -27,6 +27,7 @@ import pandas as pd
 import requests
 
 import ledger
+import paper
 import nfl_combined
 import selector as sel
 from log_lines import _rows
@@ -267,7 +268,7 @@ def _bet_label(p) -> str:
 
 
 def render_html(picks: pd.DataFrame, fair: dict, made: str, bankroll: float,
-                history: list[dict]) -> str:
+                history: list[dict], tests: list[dict] = ()) -> str:
     """The dashboard: dashboard.html with this run's data embedded, so the
     page works from GitHub Pages, the picks branch or a saved copy."""
     cols = ["away", "home", "commence", "market", "pick", "point", "price",
@@ -280,6 +281,8 @@ def render_html(picks: pd.DataFrame, fair: dict, made: str, bankroll: float,
                   "market_total": f.market_total, "total": f.total}
                  for f in fair.values()],
         "history": {"summary": ledger.summary(history), "bets": history},
+        "paper": {"summary": paper.summary(list(tests)), "gap": paper.GAP,
+                  "bets": list(tests)},
     }
     blob = json.dumps(data, default=str).replace("</", "<\\/")
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -328,6 +331,8 @@ def main():
     ap.add_argument("--md", default="site/README.md")
     ap.add_argument("--history", default="site/history.json",
                     help="bet ledger; read, extended with this run, graded")
+    ap.add_argument("--paper", default="site/paper.json",
+                    help="no-money spread test log; read, extended, graded")
     ap.add_argument("--alert", default="alert.md",
                     help="written only when this run finds bets not seen "
                          "before; the workflow posts it as a notification")
@@ -370,8 +375,19 @@ def main():
     except Exception as exc:  # scores can wait for the next run
         print(f"grading skipped: {exc}")
     ledger.save(a.history, history)
+    tests = paper.load(a.paper)
+    try:
+        games = load_games()
+        mm, tm = sel.build_outcome_models(games)
+        every = sel.consensus(rows, mm, tm)     # next week's lines too
+        tests = paper.log(tests, every, paper.model_margins(every, ODDS_TEAM),
+                          now.isoformat())
+        tests = paper.grade(tests, games, ODDS_TEAM)
+        paper.save(a.paper, tests)
+    except Exception as exc:  # the test must never block real picks
+        print(f"spread test skipped: {exc}")
     with open(a.out, "w") as fh:
-        fh.write(render_html(picks, fair, made, a.bankroll, history))
+        fh.write(render_html(picks, fair, made, a.bankroll, history, tests))
     with open(a.md, "w") as fh:
         fh.write(render_md(picks, made))
     with open(a.json, "w") as fh:
