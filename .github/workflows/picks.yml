@@ -25,9 +25,14 @@ on:
       bankroll:
         description: "Bankroll for stake sizing"
         default: "1000"
+      test_alert:
+        description: "Send an alert even if no bets are new"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  issues: write
   pages: write
   id-token: write
 
@@ -64,6 +69,10 @@ jobs:
           python picks.py --out site/index.html --json site/picks.json \
             --md site/README.md --history site/history.json --bankroll "${{ inputs.bankroll || '1000' }}"
           cat site/README.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.test_alert }}" = "true" ] && [ ! -f alert.md ]; then
+            printf '**Test alert.** New bets will show up like this.\n\n' > alert.md
+            cat site/README.md >> alert.md
+          fi
       - name: Publish to the picks branch
         run: |
           cd site
@@ -73,6 +82,24 @@ jobs:
           git add -A
           git commit -qm "Picks $(date -u +%Y-%m-%dT%H:%MZ)"
           git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" picks
+      - name: Notify about new bets
+        # A comment on the open "Picks alerts" issue, mentioning the repo
+        # owner, so GitHub pushes it to their phone.
+        if: hashFiles('alert.md') != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh issue list --state open --search "Picks alerts in:title" \
+                --json number -q '.[0].number')
+          if [ -z "$n" ]; then
+            n=$(gh issue create --title "Picks alerts" --body \
+                  "Each picks run comments here when it finds new bets." \
+                  | grep -o '[0-9]*$')
+          fi
+          { cat alert.md; echo; echo "@${{ github.repository_owner }}"; } \
+            > alert_body.md
+          gh issue comment "$n" --body-file alert_body.md
       - uses: actions/upload-pages-artifact@v3
         continue-on-error: true
         with:

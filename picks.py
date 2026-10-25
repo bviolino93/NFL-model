@@ -287,6 +287,20 @@ def render_html(picks: pd.DataFrame, fair: dict, made: str, bankroll: float,
         return fh.read().replace("/*DATA*/", blob)
 
 
+def render_alert(bets: list[dict]) -> str:
+    """Short note on bets this run found that no earlier run had."""
+    out = [f"**{len(bets)} new bet{'s' if len(bets) != 1 else ''}**\n"]
+    for b in bets:
+        p = pd.Series(b)
+        kick = pd.to_datetime(p.commence, utc=True).tz_convert(
+            "America/New_York").strftime("%a %-I:%M %p ET")
+        out.append(f"- **{_bet_label(p)}** at {p.book}, ${p.stake:,.2f} "
+                   f"({p.win_chance * 100:.0f}% to win) · {p.away} @ "
+                   f"{p.home}, {kick}")
+    out.append("\nDashboard: https://bviolino93.github.io/NFL-model/")
+    return "\n".join(out) + "\n"
+
+
 def render_md(picks: pd.DataFrame, made: str) -> str:
     """Same content as the page, as Markdown: GitHub renders it on any
     phone with no hosting set up."""
@@ -314,6 +328,9 @@ def main():
     ap.add_argument("--md", default="site/README.md")
     ap.add_argument("--history", default="site/history.json",
                     help="bet ledger; read, extended with this run, graded")
+    ap.add_argument("--alert", default="alert.md",
+                    help="written only when this run finds bets not seen "
+                         "before; the workflow posts it as a notification")
     ap.add_argument("--bankroll", type=float, default=1000.0)
     ap.add_argument("--min-ev", type=float, default=0.02)
     ap.add_argument("--books", default=os.environ.get("MY_BOOKS", ""),
@@ -346,6 +363,7 @@ def main():
     end = week_end(now)
     history = [b for b in ledger.load(a.history)
                if pd.Timestamp(b["commence"]) < end]
+    seen = {ledger._key(b) for b in history}
     history = ledger.merge(history, out, now, now.isoformat())
     try:
         history = ledger.grade(history, load_games(), ODDS_TEAM)
@@ -358,7 +376,11 @@ def main():
         fh.write(render_md(picks, made))
     with open(a.json, "w") as fh:
         json.dump({"updated": made, "picks": out}, fh, indent=2, default=str)
-    print(f"{len(out)} bets")
+    fresh = [p for p in out if ledger._key(p) not in seen]
+    if fresh:
+        with open(a.alert, "w") as fh:
+            fh.write(render_alert(fresh))
+    print(f"{len(out)} bets, {len(fresh)} new")
     for p in out:
         print(f"  {p['pick']} {p['point']} ({p['price']}) at {p['book']}: "
               f"${p['stake']} | {p['win_chance']:.1%} | {p['why']}")
