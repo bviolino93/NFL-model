@@ -1,0 +1,5 @@
+.cache_nflverse/
+.cache_nflpbp/
+__pycache__/
+*.pyc
+sweep.csv

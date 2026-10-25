@@ -1,0 +1,52 @@
+name: Backtest vs closing lines
+
+# Walk-forward backtest of the recency-weighted EPA ratings (nfl_power.py)
+# against closing spreads and totals. Reads nflverse release files directly,
+# so there are no secrets to configure.
+# Actions tab -> "Backtest vs closing lines" -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sweep:
+        description: "Run the hyperparameter sweep (tune < split, test >= split)"
+        type: choice
+        options: ["false", "true"]
+        default: "false"
+      split:
+        description: "First held-out season"
+        default: "2022"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache nflverse
+        uses: actions/cache@v4
+        with:
+          path: .cache_nflverse
+          key: nflverse-${{ github.run_id }}
+          restore-keys: nflverse-
+      - name: Install
+        run: pip install pandas numpy pyarrow
+      - name: Backtest
+        run: |
+          if [ "${{ inputs.sweep }}" = "true" ]; then
+            python backtest.py --first 2013 --split ${{ inputs.split }} --sweep --out sweep.csv | tee out.txt
+          else
+            python backtest.py --first 2013 --split ${{ inputs.split }} --out games.csv | tee out.txt
+          fi
+          { echo '```'; cat out.txt | tail -40; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backtest
+          path: |
+            games.csv
+            sweep.csv
+          if-no-files-found: ignore
