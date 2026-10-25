@@ -294,12 +294,13 @@ def this_week(rows: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
 
 def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
                 min_ev: float = 0.02, use_wind: bool = True, overrides=(),
-                wind_fn=None, week_only: bool = True):
+                wind_fn=None, week_only: bool = True, ctx_out=None):
     """
     The whole Get bets pipeline. Returns (picks, fair, priced). `overrides`
     are selector.Adjustment rows from the user; `wind_fn(home_abbr,
     commence_utc)` returns forecast mph (defaults to Open-Meteo).
-    `week_only` drops games after the current NFL week.
+    `week_only` drops games after the current NFL week. `ctx_out`, a dict,
+    gets each home team's model context (ratings, factors, wind note).
     """
     wind_fn = wind_fn or forecast_wind
     if week_only:
@@ -341,8 +342,8 @@ def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
         pts = float(np.clip(RATINGS_SPREAD_WEIGHT
                             * (m["margin"] - f.market_margin),
                             -RATINGS_SPREAD_CAP, RATINGS_SPREAD_CAP))
+        ctx.setdefault(f.home_team, {})["ratings"] = m
         if abs(pts) >= 0.05:
-            ctx.setdefault(f.home_team, {})["ratings"] = m
             adj.append(sel.Adjustment(f.home_team, "spreads", pts, "ratings"))
     if use_wind:
         for f in fair.values():
@@ -354,6 +355,8 @@ def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
                 ctx.setdefault(f.home_team, {})["wind"] = note
                 adj.append(sel.Adjustment(f.home_team, "totals", pts, "wind"))
     sel.apply_adjustments(fair, adj)
+    if ctx_out is not None:
+        ctx_out.update(ctx)
     pol = sel.Policy(min_ev=min_ev)
     priced = sel.price_offers(rows, fair, mm, tm, pol)
     if priced.empty:
