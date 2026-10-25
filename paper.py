@@ -29,6 +29,9 @@ from nfl_data import load_games, load_team_games
 from nfl_power import PowerConfig
 
 GAP = 3.0
+# Only lines seen this far ahead of kickoff count as early; anything later
+# is close to the closing line, which the ratings are known not to beat.
+MIN_LEAD_DAYS = 3.0
 # Points per unit of snap-weighted injury load (nfl_combined.injury_loads),
 # measured against the ratings' margin over 2013-2026 (t -2.3 and -2.8).
 # Against the closing line only about a third survives, so the market
@@ -110,10 +113,17 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
 def log(history: list[dict], fair: dict, margins: dict, run: str) -> list:
     """Add a test bet for each game seen for the first time where the
     ratings and the market disagree by GAP points or more."""
+    def lead(commence, at):
+        return (pd.Timestamp(commence) - pd.Timestamp(at)) / pd.Timedelta(days=1)
+
+    history = [b for b in history
+               if lead(b["commence"], b["logged"]) >= MIN_LEAD_DAYS]
     seen = {b["key"] for b in history}
     for k, f in fair.items():
         key = _key(f.home_team, f.away_team, str(f.commence))
         if key in seen or k not in margins or np.isnan(f.market_margin):
+            continue
+        if lead(f.commence, run) < MIN_LEAD_DAYS:
             continue
         seen.add(key)
         line = round(f.market_margin * 2) / 2     # home margin, bookable
