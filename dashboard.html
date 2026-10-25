@@ -73,6 +73,13 @@ footer{color:var(--mute);font-size:.75rem;margin-top:32px}
 <div class="chart" id="chart"><div class="tip" id="tip"></div></div>
 <div class="tablewrap"><table id="history"></table></div>
 
+<section id="paper-wrap">
+  <h2>Spread test (no money)</h2>
+  <p class="sub" id="paper-sub"></p>
+  <section class="kpis" id="paper-kpis"></section>
+  <div class="tablewrap"><table id="paper"></table></div>
+</section>
+
 <details>
   <summary>Fair lines this run</summary>
   <div class="tablewrap"><table id="fair"></table></div>
@@ -293,6 +300,50 @@ footer{color:var(--mute);font-size:.75rem;margin-top:32px}
       ]));
   } else {
     $("history").closest(".tablewrap").hidden = true;
+  }
+
+  // ---- no-money spread test
+  const P = D.paper;
+  if (!P || !P.bets.length) {
+    if (P) {
+      $("paper-sub").textContent = "The model's spread picks at early lines (ratings plus injuries) are logged here " +
+        `once next week's lines are posted (a ${P.gap}-point disagreement or more). ` +
+        "None yet.";
+      $("paper-kpis").hidden = true;
+      $("paper").closest(".tablewrap").hidden = true;
+    } else {
+      $("paper-wrap").hidden = true;
+    }
+  } else {
+    const Q = P.summary;
+    $("paper-sub").textContent = "Spreads where the team ratings plus injuries disagree with the early line " +
+      `by ${P.gap}+ points. Not staked: it earns a place in the real picks only if it beats ` +
+      "the closing line over a season.";
+    const pk = $("paper-kpis");
+    kpi(pk, String(Q.bets), "test bets logged");
+    kpi(pk, Q.wins + Q.losses ? `${Q.wins}-${Q.losses}${Q.pushes ? "-" + Q.pushes : ""}` : "—",
+        "record vs early line");
+    kpi(pk, Q.avg_clv == null ? "—" : (Q.avg_clv > 0 ? "+" : "") + Q.avg_clv.toFixed(2) + " pts",
+        "average line move our way", Q.avg_clv == null ? "" : (Q.avg_clv > 0 ? "win" : "loss"));
+    kpi(pk, Q.beat_close == null ? "—" : pct(Q.beat_close, 0), "beat the closing line");
+    const sp = (x) => (x > 0 ? "+" : "") + x;
+    table("paper", [["Date"], ["Game"], ["Test bet"], ["Model says"], ["Gap", 1],
+                    ["Close", 1], ["Moved", 1], ["Final"], ["Result"]],
+      P.bets.slice().sort((a, b) => b.commence.localeCompare(a.commence)).map((b) => {
+        const mm = b.model_margin;
+        const fav = mm >= 0 ? short(b.home) : short(b.away);
+        const sign = b.side === b.home ? 1 : -1;
+        return [
+          [new Date(b.commence).toLocaleDateString("en-US", {...ET, month: "short", day: "numeric"})],
+          [`${short(b.away)} @ ${short(b.home)}`],
+          [`${short(b.side)} ${sp(b.point)}`],
+          [`${fav} by ${Math.abs(mm).toFixed(1)}`],
+          [Math.abs(b.gap).toFixed(1), "r"],
+          [b.close == null ? "" : sp(-sign * b.close), "r"],
+          [b.clv == null ? "" : sp(b.clv), "r " + (b.clv > 0 ? "win" : b.clv < 0 ? "loss" : "")],
+          [b.final || ""], [b.result || "open", b.result || "open"],
+        ];
+      }));
   }
 
   if (D.fair.length) {

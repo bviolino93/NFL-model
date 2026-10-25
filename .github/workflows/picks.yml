@@ -61,13 +61,14 @@ jobs:
           mkdir -p site
           git fetch -q --depth 1 origin picks && \
             git show FETCH_HEAD:history.json > site/history.json || true
+          git show FETCH_HEAD:paper.json > site/paper.json 2>/dev/null || true
       - name: Run picks
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           MY_BOOKS: ${{ vars.MY_BOOKS }}
         run: |
           python picks.py --out site/index.html --json site/picks.json \
-            --md site/README.md --history site/history.json --bankroll "${{ inputs.bankroll || '1000' }}"
+            --md site/README.md --history site/history.json --paper site/paper.json --bankroll "${{ inputs.bankroll || '1000' }}"
           cat site/README.md >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ inputs.test_alert }}" = "true" ] && [ ! -f alert.md ]; then
             printf '**Test alert.** New bets will show up like this.\n\n' > alert.md
