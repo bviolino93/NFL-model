@@ -54,16 +54,16 @@ def _key(home: str, away: str, commence: str) -> str:
 
 def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
     """The test's own home margin for each fair-line game: calibrated
-    ratings (results through the previous week, no starting-QB knowledge,
-    since the starter is only certain at kickoff) plus each side's injuries
-    from the latest report out."""
+    ratings (results through the previous week, with each side's projected
+    starting QB) plus each side's injuries from the latest report out."""
     games = load_games()
     games = games[games.game_type == "REG"].copy()
     games["neutral"] = games["location"].astype(str).str.lower() == "neutral"
     games["margin"] = games["home_score"] - games["away_score"]
     games["points"] = games["home_score"] + games["away_score"]
-    games["home_qb_id"] = np.nan
-    games["away_qb_id"] = np.nan
+    # Unplayed games carry nflverse's projected starter, which is known
+    # before kickoff; without it the ratings assume last game's QB, which
+    # is wrong whenever a starter returns from injury.
     want = {}
     for k, f in fair.items():
         kick = pd.Timestamp(f.commence).tz_convert("America/New_York")
