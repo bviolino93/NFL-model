@@ -41,3 +41,13 @@ def test_grade_totals_and_spreads():
 def test_ungraded_until_score_posted():
     h = ledger.grade([dict(BET)], _games(None, None), ABBR)
     assert h[0].get("result") is None
+
+
+def test_this_week_ends_after_monday_night():
+    import picks
+    rows = pd.DataFrame({"commence_time": ["2026-10-27T00:15:00Z",
+                                           "2026-11-01T17:00:00Z"]})
+    now = datetime(2026, 10, 25, 13, tzinfo=timezone.utc)
+    assert len(picks.this_week(rows, now)) == 1
+    now = datetime(2026, 10, 27, 15, tzinfo=timezone.utc)
+    assert len(picks.this_week(rows, now)) == 2
