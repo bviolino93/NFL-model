@@ -33,14 +33,23 @@ def load(path: str) -> list[dict]:
 
 def merge(history: list[dict], picks: list[dict], now: datetime,
           run: str) -> list[dict]:
+    """A bet a later run no longer suggests before kickoff (the line moved
+    or a book caught up) is marked pulled: it stays listed but is not
+    graded or counted. It comes back if a run suggests it again."""
     out = {_key(b): b for b in history}
+    current = {_key(p) for p in picks}
+    for k, b in out.items():
+        if (k not in current
+                and pd.Timestamp(b["commence"]) > pd.Timestamp(now)):
+            b["pulled"] = True
     for p in picks:
         k = _key(p)
         old = out.get(k)
         if old and pd.Timestamp(old["commence"]) <= pd.Timestamp(now):
             continue
         out[k] = {**p, "first_seen": (old or {}).get("first_seen", run),
-                  "last_seen": run, "result": None, "profit": None}
+                  "last_seen": run, "result": None, "profit": None,
+                  "pulled": False}
     return sorted(out.values(), key=lambda b: (b["commence"], b["home"]))
 
 
@@ -66,7 +75,7 @@ def grade(bets: list[dict], games: pd.DataFrame,
     done = games.dropna(subset=["home_score", "away_score"])
     done = done.assign(day=pd.to_datetime(done["gameday"]).dt.normalize())
     for b in bets:
-        if b.get("result"):
+        if b.get("result") or b.get("pulled"):
             continue
         day = (pd.Timestamp(b["commence"]).tz_convert("America/New_York")
                .tz_localize(None).normalize())
@@ -84,7 +93,7 @@ def grade(bets: list[dict], games: pd.DataFrame,
 
 
 def summary(bets: list[dict]) -> dict:
-    graded = [b for b in bets if b.get("result")]
+    graded = [b for b in bets if b.get("result") and not b.get("pulled")]
     staked = sum(b["stake"] for b in graded)
     profit = sum(b["profit"] for b in graded)
     return {
