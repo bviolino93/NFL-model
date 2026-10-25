@@ -5477,6 +5477,7 @@ with tab_picks:
                       if b.strip() in _book_opts]
         except Exception:
             _saved = []
+        _saved = _saved or ["draftkings", "fanduel"]   # picks.MY_BOOKS
         _mine = st.multiselect(
             "Books you can bet at (empty = all)", _book_opts, default=_saved,
             help="Every book still informs the fair line; only these are "

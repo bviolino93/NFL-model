@@ -144,6 +144,8 @@ def wind_points(mph) -> float:
 # Books a US bettor can normally use. The eu region is still pulled, because
 # Pinnacle and the exchanges make the consensus sharper, but bets are only
 # suggested at these unless MY_BOOKS says otherwise.
+# Where Brian bets (2026-10-25). Every book still sets the fair line.
+MY_BOOKS = "draftkings,fanduel"
 US_BOOKS = ["draftkings", "fanduel", "betmgm", "williamhill_us", "espnbet",
             "betrivers", "fanatics", "hardrockbet", "ballybet", "betonlineag",
             "bovada", "mybookieag", "lowvig", "betus", "fliff", "betparx",
@@ -338,7 +340,8 @@ def main():
                          "before; the workflow posts it as a notification")
     ap.add_argument("--bankroll", type=float, default=1000.0)
     ap.add_argument("--min-ev", type=float, default=0.02)
-    ap.add_argument("--books", default=os.environ.get("MY_BOOKS", ""),
+    ap.add_argument("--books",
+                    default=os.environ.get("MY_BOOKS") or MY_BOOKS,
                     help="comma list of books you can bet at")
     ap.add_argument("--lines-csv", default="",
                     help="use a logged snapshot instead of the live feed")
