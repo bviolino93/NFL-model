@@ -5509,58 +5509,25 @@ with tab_picks:
         elif _rows.empty:
             st.info("No NFL games in the feed right now.")
         else:
-            _mm, _tm = selector_models()
-            _fair = _sel.consensus(_rows, _mm, _tm)
-            _adj = []
-            for _r in _ov.dropna(subset=["home_team", "market",
-                                         "points"]).itertuples():
-                _adj.append(_sel.Adjustment(_r.home_team, _r.market,
-                                            float(_r.points), "override",
-                                            str(_r.note or "")))
-            # The combined model: ratings, QB changes, injuries, rest,
-            # division, late season, each weighted by what it has been
-            # worth against the closing line in walk-forward backtests.
-            _s, _w = current_week(sched_all)
-            if _w is not None:
-                import nfl_combined as _nc
-                _cw, _cerr = combined_week(_s, _w)
-                if _cerr:
-                    st.caption(f"Combined model unavailable: {_cerr}")
-                _full = {v: k for k, v in ODDS_TEAM.items()}
-                for _r in _cw.itertuples():
-                    _hn = _full.get(_r.home) or _full.get(ODDS_ALT.get(_r.home))
-                    if not _hn:
-                        continue
-                    if abs(_r.adj_spread) >= 0.05:
-                        _adj.append(_sel.Adjustment(
-                            _hn, "spreads", float(_r.adj_spread), "combined",
-                            _nc.explain(_r.why_spread, _r.x, _r.home, _r.away,
-                                        "spreads")))
-                    if abs(_r.adj_total) >= 0.05:
-                        _adj.append(_sel.Adjustment(
-                            _hn, "totals", float(_r.adj_total), "combined",
-                            _nc.explain(_r.why_total, _r.x, _r.home, _r.away,
-                                        "totals")))
-            if _use_wind:
-                for _f in _fair.values():
-                    _h = ODDS_TEAM.get(_f.home_team)
-                    # fetch_wind matches against Eastern local hours.
-                    _k = pd.to_datetime(_f.commence, utc=True, errors="coerce")
-                    _k = (None if pd.isna(_k) else _k.tz_convert(
-                        "America/New_York").tz_localize(None).isoformat())
-                    _mph = fetch_wind(_h, _k) if (_h and _k) else None
-                    _pts = wind_adjustment(_mph)
-                    if _pts:
-                        _adj.append(_sel.Adjustment(
-                            _f.home_team, "totals", _pts, "wind",
-                            f"{_mph:.0f} mph wind is forecast, which "
-                            f"keeps scoring down ({abs(_pts):.1f} pts)."))
-            _sel.apply_adjustments(_fair, _adj)
-            _pol = _sel.Policy(min_ev=_min_ev)
-            _priced = _sel.price_offers(_rows, _fair, _mm, _tm, _pol)
-            _bettable = (_priced[_priced["book"].isin(_mine)] if _mine
-                         else _priced)
-            _picks = _sel.select(_bettable, _bank, _pol)
+            import picks as _pk
+            _ovs = [_sel.Adjustment(_r.home_team, _r.market, float(_r.points),
+                                    "override", str(_r.note or ""))
+                    for _r in _ov.dropna(subset=["home_team", "market",
+                                                 "points"]).itertuples()]
+
+            def _wind(_h, _c):
+                # fetch_wind matches against Eastern local hours.
+                _k = pd.to_datetime(_c, utc=True, errors="coerce")
+                if pd.isna(_k) or not _h:
+                    return None
+                return fetch_wind(_h, _k.tz_convert("America/New_York")
+                                  .tz_localize(None).isoformat())
+
+            # Same pipeline as the scheduled GitHub run (picks.py): sharp
+            # consensus, the combined model on totals, forecast wind, US
+            # books only unless you pick yours, spreads and totals only.
+            _picks, _fair, _priced = _pk.build_picks(
+                _rows, _mine, _bank, _min_ev, _use_wind, _ovs, _wind)
 
             _fl = pd.DataFrame([{
                 "game": f"{f.away_team} @ {f.home_team}",
@@ -5580,32 +5547,11 @@ with tab_picks:
                         "answer against a sharp consensus, and the right one.")
             else:
                 for _p in _picks.itertuples():
-                    _pt = "" if pd.isna(_p.point) else (
-                        f" {_p.point:+g}" if _p.market == "spreads"
-                        else f" {_p.point:g}")
-                    _what = " ML" if _p.market == "h2h" else ""
-                    _src = str(_p.sources).split(",")
-                    _why = []
-                    if "market" in _src:
-                        if _p.market == "totals":
-                            _fv = f"put the total at {_p.fair_market:.1f}"
-                        else:
-                            _fav = (_p.home if _p.fair_market >= 0
-                                    else _p.away)
-                            _fv = (f"make {_fav} a {abs(_p.fair_market):.1f}-point "
-                                   f"favourite")
-                        _why.append(f"{_p.book} hasn't caught up with the "
-                                    f"sharp books, which {_fv}.")
-                    if _p.notes:
-                        _why.append(_p.notes)
-                    if "override" in _src:
-                        _why.append("Your override applies.")
                     st.markdown(
-                        f"**{_p.pick}{_pt}{_what} ({int(_p.price):+d})** at "
-                        f"**{_p.book}** \u2014 stake **${_p.stake:,.2f}** "
-                        f"\u00b7 {_p.away} @ {_p.home} \u00b7 win chance "
-                        f"{_p.p_win / max(1e-9, 1 - _p.p_push) * 100:.1f}%"
-                        f"\n\n{' '.join(_why)}")
+                        f"**{_pk._bet_label(_p)}** at **{_p.book}** \u2014 "
+                        f"stake **${_p.stake:,.2f}** \u00b7 {_p.away} @ "
+                        f"{_p.home} \u00b7 win chance "
+                        f"{_p.win_chance * 100:.1f}%\n\n{_p.why}")
                 _show = _picks.assign(
                     game=_picks["away"] + " @ " + _picks["home"],
                     p_win=(_picks["p_win"] * 100).round(1),
@@ -5615,7 +5561,7 @@ with tab_picks:
                     st.dataframe(
                         _show[["game", "market", "pick", "point", "price",
                                "book", "fair", "p_win", "ev", "stake",
-                               "sources", "notes"]],
+                               "sources", "why"]],
                         use_container_width=True, hide_index=True)
                 st.caption("p_win and EV in %. Stake is quarter-Kelly, capped "
                            "at 2% per bet and 10% per slate.")

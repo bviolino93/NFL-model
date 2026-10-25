@@ -396,15 +396,18 @@ def _fact(k, x, home, away):
 
 
 def explain(contrib: dict, x: dict, home: str, away: str, market: str,
-            n: int = 3, min_pts: float = 0.1) -> str:
+            n: int = 3, min_pts: float = 0.1, toward: int = 0) -> str:
     """
     The biggest factors as sentences, e.g. "MIA is starting a different QB
     than last game, which has historically favored NYJ (+0.3 pts)."
+
+    toward=+1 keeps only factors pushing the home margin / total UP, -1
+    only those pushing it down, so a bet's reasons all point its way.
     """
     out = []
-    for k, v in sorted(contrib.items(), key=lambda kv: -abs(kv[1]))[:n]:
-        if abs(v) < min_pts:
-            continue
+    items = [(k, v) for k, v in contrib.items()
+             if abs(v) >= min_pts and (toward == 0 or v * toward > 0)]
+    for k, v in sorted(items, key=lambda kv: -abs(kv[1]))[:n]:
         if market == "totals":
             helps = "the over" if v > 0 else "the under"
         else:

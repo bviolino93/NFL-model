@@ -95,6 +95,12 @@ def fetch_rows(key: str, regions: str = "us,eu") -> pd.DataFrame:
     r = requests.get(ODDS_URL, params={
         "apiKey": key, "regions": regions, "markets": "spreads,totals,h2h",
         "oddsFormat": "american"}, timeout=30)
+    if r.status_code == 401:
+        raise SystemExit(
+            f"The Odds API rejected the key (401). It is {len(key)} "
+            "characters long; a key is normally 32. Re-save the "
+            "ODDS_API_KEY secret with just the key, no quotes or spaces, "
+            "and check the plan has credits left at the-odds-api.com.")
     r.raise_for_status()
     print(f"odds: {len(r.json())} events, credits left "
           f"{r.headers.get('x-requests-remaining')}")
@@ -134,7 +140,22 @@ def wind_points(mph) -> float:
     return WIND_PTS_PER_MPH * float(mph) * WIND_FORECAST_DISCOUNT
 
 
-def explain_pick(p) -> str:
+# Books a US bettor can normally use. The eu region is still pulled, because
+# Pinnacle and the exchanges make the consensus sharper, but bets are only
+# suggested at these unless MY_BOOKS says otherwise.
+US_BOOKS = ["draftkings", "fanduel", "betmgm", "williamhill_us", "espnbet",
+            "betrivers", "fanatics", "hardrockbet", "ballybet", "betonlineag",
+            "bovada", "mybookieag", "lowvig", "betus", "fliff", "betparx",
+            "unibet_us", "superbook", "wynnbet"]
+
+# Only totals use the combined model to move the line: its totals picks held
+# up out of sample (55%) and its spread picks did not (50%). Spread factors
+# are still computed and logged, as INFO, so they can earn their way back.
+COMBINED_MARKETS = {"totals"}
+
+
+def explain_pick(p, ctx: dict) -> str:
+    """Why this bet: the market gap, then only the factors pointing its way."""
     why = []
     if "market" in str(p.sources).split(","):
         if p.market == "totals":
@@ -142,19 +163,36 @@ def explain_pick(p) -> str:
         else:
             fav = p.home if p.fair_market >= 0 else p.away
             fv = f"make {fav} a {abs(p.fair_market):.1f}-point favorite"
-        why.append(f"{p.book} hasn't caught up with the sharp books, which "
-                   f"{fv}.")
-    if p.notes:
-        why.append(p.notes)
-    return " ".join(why)
+        why.append(f"{BOOK_NAME.get(p.book, p.book)} hasn't caught up with "
+                   f"the sharp books, which {fv}.")
+    c = ctx.get(p.home, {})
+    if p.market == "totals":
+        toward = -1 if str(p.pick).lower() == "under" else 1
+        if "combined" in str(p.sources) and "why_total" in c:
+            why.append(nfl_combined.explain(c["why_total"], c["x"], c["h"],
+                                            c["a"], "totals", toward=toward))
+        if "wind" in str(p.sources) and toward < 0 and c.get("wind"):
+            why.append(c["wind"])
+    for n in str(p.notes or "").split("; "):
+        if n and "override" in str(p.sources) and n not in why:
+            why.append(n)
+    return " ".join(w for w in why if w)
 
 
 def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
-                min_ev: float = 0.02, use_wind: bool = True):
+                min_ev: float = 0.02, use_wind: bool = True, overrides=(),
+                wind_fn=None):
+    """
+    The whole Get bets pipeline. Returns (picks, fair, priced). `overrides`
+    are selector.Adjustment rows from the user; `wind_fn(home_abbr,
+    commence_utc)` returns forecast mph (defaults to Open-Meteo).
+    """
+    wind_fn = wind_fn or forecast_wind
     games = load_games()
     mm, tm = sel.build_outcome_models(games)
     fair = sel.consensus(rows, mm, tm)
-    adj = []
+    adj = list(overrides)
+    ctx = {}
     season = _current_season()
     left = games[(games["season"] == season) & games["home_score"].isna()]
     if len(left):
@@ -168,31 +206,37 @@ def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
             hn = FULL_NAME.get(r.home)
             if not hn:
                 continue
-            for mkt, v, why in (("spreads", r.adj_spread, r.why_spread),
-                                ("totals", r.adj_total, r.why_total)):
+            ctx[hn] = {"why_total": r.why_total, "why_spread": r.why_spread,
+                       "x": r.x, "h": r.home, "a": r.away}
+            for mkt, v in (("spreads", r.adj_spread), ("totals", r.adj_total)):
                 if abs(v) >= 0.05:
-                    adj.append(sel.Adjustment(
-                        hn, mkt, float(v), "combined",
-                        nfl_combined.explain(why, r.x, r.home, r.away, mkt)))
+                    src = "combined" if mkt in COMBINED_MARKETS else \
+                        "combined_info"
+                    adj.append(sel.Adjustment(hn, mkt, float(v), src))
     if use_wind:
         for f in fair.values():
-            mph = forecast_wind(ODDS_TEAM.get(f.home_team), f.commence)
+            mph = wind_fn(ODDS_TEAM.get(f.home_team), f.commence)
             pts = wind_points(mph)
             if pts:
-                adj.append(sel.Adjustment(
-                    f.home_team, "totals", pts, "wind",
-                    f"{mph:.0f} mph wind is forecast, which keeps scoring "
-                    f"down ({abs(pts):.1f} pts)."))
+                note = (f"{mph:.0f} mph wind is forecast, which keeps scoring "
+                        f"down ({abs(pts):.1f} pts).")
+                ctx.setdefault(f.home_team, {})["wind"] = note
+                adj.append(sel.Adjustment(f.home_team, "totals", pts, "wind"))
     sel.apply_adjustments(fair, adj)
     pol = sel.Policy(min_ev=min_ev)
     priced = sel.price_offers(rows, fair, mm, tm, pol)
-    bettable = priced[priced["book"].isin(my_books)] if my_books else priced
+    if priced.empty:
+        return priced, fair, priced
+    # Moneylines are priced from the spread distribution, which is not
+    # validated for them; they stay visible in `priced` but are not picked.
+    bettable = priced[priced["market"].isin(["spreads", "totals"])]
+    bettable = bettable[bettable["book"].isin(my_books or US_BOOKS)]
     picks = sel.select(bettable, bankroll, pol)
     if len(picks):
-        picks["book"] = picks["book"].map(lambda b: BOOK_NAME.get(b, b))
         picks["win_chance"] = picks["p_win"] / (1 - picks["p_push"])
-        picks["why"] = [explain_pick(p) for p in picks.itertuples()]
-    return picks, fair
+        picks["why"] = [explain_pick(p, ctx) for p in picks.itertuples()]
+        picks["book"] = picks["book"].map(lambda b: BOOK_NAME.get(b, b))
+    return picks, fair, priced
 
 
 def _bet_label(p) -> str:
@@ -285,12 +329,16 @@ def main():
     if a.lines_csv:
         rows = sel.latest_snapshot(pd.read_csv(a.lines_csv))
     else:
-        key = os.environ.get("ODDS_API_KEY")
+        # Pasted secrets often carry a newline, spaces or the quotes from a
+        # TOML line (odds_api_key = "..."); none of those are part of a key.
+        key = (os.environ.get("ODDS_API_KEY") or "").strip().strip('"\'')
+        if "=" in key:
+            key = key.split("=", 1)[1].strip().strip('"\'')
         if not key:
             raise SystemExit("set ODDS_API_KEY")
         rows = fetch_rows(key)
     books = [b.strip() for b in a.books.split(",") if b.strip()]
-    picks, fair = build_picks(rows, books, a.bankroll, a.min_ev)
+    picks, fair, _ = build_picks(rows, books, a.bankroll, a.min_ev)
     made = datetime.now(timezone.utc).strftime("%a %b %-d, %H:%M UTC")
     for path in (a.out, a.json, a.md):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
