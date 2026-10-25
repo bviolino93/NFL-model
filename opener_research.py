@@ -8,8 +8,17 @@ moves toward the model, betting early is an edge even though the close is
 efficient (closing line value).
 
 Needs historical opening lines, which nflverse does not have. This reads
-the free AusSportsBetting NFL file (open and close lines since 2006),
-downloaded by the research workflow; the file itself is not committed.
+the free AusSportsBetting NFL file (aussportsbetting.com/historical_data/
+nfl.xlsx; opening lines from 2014). The site blocks the sandbox and GitHub
+Actions, so download it by hand; it is not committed.
+
+Result (2026-10-25): no. Betting the model's side of the opener went about
+50-53% in 2014-17 and 2018-21 at every gap size. Lines do move toward the
+model in 2022-26, but that era's openers are often lookahead lines posted
+before the previous week was played, so the move is the market catching up
+on results the model had already seen; with ratings one week staler the
+bets go about 50%. Starting QBs are not passed in (they are only known at
+kickoff, not when the line opens).
 
     python opener_research.py path/to/nfl.xlsx
 """
@@ -26,7 +35,7 @@ from nfl_data import graded_games, load_games, load_team_games
 from nfl_power import PowerConfig
 from picks import ODDS_TEAM
 
-ERAS = {"2007-14": (2007, 2014), "2015-21": (2015, 2021),
+ERAS = {"2014-17": (2014, 2017), "2018-21": (2018, 2021),
         "2022-26": (2022, 2026)}
 ALIASES = {"Washington Redskins": "WAS", "Washington Football Team": "WAS",
            "Washington": "WAS", "Oakland Raiders": "LV",
@@ -55,14 +64,20 @@ def load_ausb(path: str) -> pd.DataFrame:
     return d[["date", "home", "away", "open", "close_ausb"]].dropna()
 
 
-def frame(ausb: pd.DataFrame) -> pd.DataFrame:
+def frame(ausb: pd.DataFrame, stale_weeks: int = 0) -> pd.DataFrame:
+    """`stale_weeks=1` rates each game with data through two weeks before,
+    matching what was known when a lookahead line opened."""
     games = load_games()
     games = games[games.game_type == "REG"]
     g = graded_games(games)
-    g = g[g.season >= 2006]
-    tg = load_team_games(range(2005, int(g.season.max()) + 1))
-    fr = calibrate(project(tg, g, sorted(g.season.unique()), PowerConfig()))
-    fr = fr.merge(g[["game_id", "gameday"]], on="game_id")
+    g = g[g.season >= 2012]
+    g["home_qb_id"] = np.nan
+    g["away_qb_id"] = np.nan
+    tg = load_team_games(range(2011, int(g.season.max()) + 1))
+    gg = g.assign(week=(g["week"] - stale_weeks).clip(lower=1))
+    fr = calibrate(project(tg, gg, sorted(gg.season.unique()), PowerConfig()))
+    fr = fr.drop(columns=["week"]).merge(
+        g[["game_id", "gameday", "week"]], on="game_id")
     fr["date"] = pd.to_datetime(fr["gameday"]).dt.normalize()
     m = fr.merge(ausb, on=["home", "away"], how="inner")
     m = m[(m.date_x - m.date_y).abs() <= pd.Timedelta(days=1)]
@@ -112,4 +127,7 @@ def report(m: pd.DataFrame) -> None:
 
 
 if __name__ == "__main__":
-    report(frame(load_ausb(sys.argv[1])))
+    lines = load_ausb(sys.argv[1])
+    for stale in (0, 1):
+        print(f"\n######## ratings {stale} week(s) staler than the game")
+        report(frame(lines, stale))
