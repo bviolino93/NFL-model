@@ -51,3 +51,14 @@ def test_this_week_ends_after_monday_night():
     assert len(picks.this_week(rows, now)) == 1
     now = datetime(2026, 10, 27, 15, tzinfo=timezone.utc)
     assert len(picks.this_week(rows, now)) == 2
+
+
+def test_dropped_bet_is_pulled_and_not_counted():
+    early = datetime(2026, 10, 25, 13, tzinfo=timezone.utc)
+    h = ledger.merge([], [BET], early, "r1")
+    h = ledger.merge(h, [], early, "r2")
+    assert h[0]["pulled"]
+    h = ledger.grade(h, _games(28, 24), ABBR)
+    assert h[0]["result"] is None and ledger.summary(h)["wins"] == 0
+    h = ledger.merge(h, [BET], early, "r3")
+    assert not h[0]["pulled"]

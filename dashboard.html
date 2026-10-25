@@ -191,7 +191,8 @@ footer{color:var(--mute);font-size:.75rem;margin-top:32px}
   drawBets();
 
   // ---- track record
-  const H = D.history.bets;
+  const H = D.history.bets.filter((b) => !b.pulled);
+  const pulled = D.history.bets.filter((b) => b.pulled);
   const S = D.history.summary;
   const rec = $("record-kpis");
   const graded = H.filter((b) => b.result).sort((a, b) => a.commence.localeCompare(b.commence));
@@ -277,7 +278,7 @@ footer{color:var(--mute);font-size:.75rem;margin-top:32px}
       t.append(tr);
     });
   };
-  const past = H.slice().sort((a, b) => b.commence.localeCompare(a.commence));
+  const past = H.concat(pulled).sort((a, b) => b.commence.localeCompare(a.commence));
   if (past.length) {
     table("history", [["Date"], ["Game"], ["Bet"], ["Book"], ["Stake", 1], ["Win %", 1],
                       ["Final"], ["Result"], ["Profit", 1]],
@@ -286,7 +287,8 @@ footer{color:var(--mute);font-size:.75rem;margin-top:32px}
         [`${short(b.away)} @ ${short(b.home)}`],
         [`${label(b)} (${odds(b.price)})`], [b.book],
         [money(b.stake), "r"], [pct(b.win_chance, 0), "r"],
-        [b.final || ""], [b.result || "open", b.result || "open"],
+        [b.final || ""],
+        b.pulled ? ["pulled (line moved)", "open"] : [b.result || "open", b.result || "open"],
         [b.profit == null ? "" : signed(b.profit), "r " + (b.result || "")],
       ]));
   } else {
