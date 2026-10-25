@@ -46,3 +46,23 @@ What the sweep did teach:
 3. Port the app's injury, rest and wind adjustments into the harness and keep only what survives.
 4. Wire `nfl_power` into Sunday Edge as the rating, with fractional Kelly on the shrunk edge.
 5. Props model (receiving/rushing yards) using the same walk-forward discipline.
+
+## Update: weather, injuries and props (same day)
+
+**Weather, rest and injuries** (`market_tests.py`, residual vs close, split into 2006-2015 and 2016-2026):
+
+- Wind is the only consistent signal: about −0.15 total points per mph beyond the closing total, with t ≈ −2.5 and −2.9. nflverse wind is *observed* at kickoff, though, so this overstates what forecasts can deliver. It needs a re-test on archived forecasts (open-meteo is blocked in the cloud sandbox).
+- Injury loads move margins about 1 point per missing starter, and the close already prices about 85% of that. What's left flips sign between halves.
+- Rest, byes, division games, QB changes and weeks 17-18 show nothing consistent.
+
+**Props** (`nfl_props.py`) projects receiving yards, receptions and rushing yards from target/carry share × team volume × shrunk efficiency, then adjusts for opponent and the market's implied team total, walk-forward. On held-out 2022-2026 it beats the naive baselines:
+
+| Market | MAE model | Season avg | Last 4 |
+|---|---|---|---|
+| Receiving yards | 25.1 | 26.9 | 27.3 |
+| Receptions | 1.78 | 1.90 | 1.92 |
+| Rushing yards | 25.9 | 27.1 | 27.4 |
+
+Beating naive averages is necessary but not enough, because books beat them too. The real test is against prop lines, and there's no free history of those. `log_lines.py` plus `.github/workflows/log_lines.yml` snapshot game lines and props from The Odds API every Tuesday and Sunday into `data/lines/`. That builds the props test set and an opener-vs-close history for game-line CLV at the same time, at roughly 400 credits a month.
+
+`python nfl_props.py --week N` prints this week's projections, with mean and median, for unplayed games. It does not yet know about inactives, so check the injury report.
