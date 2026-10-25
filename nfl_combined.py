@@ -399,7 +399,7 @@ def explain(contrib: dict, x: dict, home: str, away: str, market: str,
             n: int = 3, min_pts: float = 0.1) -> str:
     """
     The biggest factors as sentences, e.g. "MIA is starting a different QB
-    than last game, which has historically favoured NYJ (+0.3 pts)."
+    than last game, which has historically favored NYJ (+0.3 pts)."
     """
     out = []
     for k, v in sorted(contrib.items(), key=lambda kv: -abs(kv[1]))[:n]:
@@ -410,7 +410,7 @@ def explain(contrib: dict, x: dict, home: str, away: str, market: str,
         else:
             helps = home if v > 0 else away
         f = _fact(k, x, home, away)
-        out.append(f"{f[0].upper() + f[1:]}, which has historically favoured "
+        out.append(f"{f[0].upper() + f[1:]}, which has historically favored "
                    f"{helps} ({abs(v):.1f} pts).")
     return " ".join(out)
 

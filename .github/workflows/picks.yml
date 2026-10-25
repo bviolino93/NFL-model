@@ -1,0 +1,72 @@
+name: Picks
+
+# Runs the pick engine (picks.py) against live odds and publishes the result
+# three ways:
+#   * the run's summary page (Actions tab -> latest "Picks" run)
+#   * the `picks` branch: README.md renders on github.com on any phone,
+#     https://github.com/bviolino93/NFL-model/tree/picks
+#   * GitHub Pages, if enabled (Settings -> Pages -> Source: GitHub Actions)
+#
+# Needs repository secret ODDS_API_KEY. Optional repository variable
+# MY_BOOKS, e.g. "draftkings,fanduel", to only suggest books you can use.
+# Each run costs ~6 Odds API credits (us + eu regions, 3 markets).
+
+on:
+  schedule:
+    - cron: "0 15 * 9-12,1-2 0"    # Sunday 15:00 UTC, before the early games
+    - cron: "0 19 * 9-12,1-2 4"    # Thursday 19:00 UTC
+    - cron: "0 20 * 9-12,1-2 1"    # Monday 20:00 UTC
+  workflow_dispatch:
+    inputs:
+      bankroll:
+        description: "Bankroll for stake sizing"
+        default: "1000"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: picks
+  cancel-in-progress: false
+
+jobs:
+  picks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache nflverse
+        uses: actions/cache@v4
+        with:
+          path: .cache_nflverse
+          key: nflverse-picks-${{ github.run_id }}
+          restore-keys: nflverse-picks-
+      - run: pip install pandas numpy pyarrow requests
+      - name: Run picks
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          MY_BOOKS: ${{ vars.MY_BOOKS }}
+        run: |
+          python picks.py --out site/index.html --json site/picks.json \
+            --md site/README.md --bankroll "${{ inputs.bankroll || '1000' }}"
+          cat site/README.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish to the picks branch
+        run: |
+          cd site
+          git init -q -b picks
+          git config user.name "picks-bot"
+          git config user.email "picks-bot@users.noreply.github.com"
+          git add -A
+          git commit -qm "Picks $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" picks
+      - uses: actions/upload-pages-artifact@v3
+        continue-on-error: true
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
+        continue-on-error: true
