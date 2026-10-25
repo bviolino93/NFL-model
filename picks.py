@@ -282,12 +282,14 @@ def week_end(now: datetime) -> pd.Timestamp:
 
 
 def this_week(rows: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
-    """Only games kicking off before the current NFL week ends. Books post
-    next week's lines early; those move a lot on injury news, so the bot
-    waits for that week's own runs."""
-    end = week_end(now or datetime.now(timezone.utc))
+    """Only games that have not kicked off and start before the current NFL
+    week ends. Books post next week's lines early; those move a lot on
+    injury news, so the bot waits for that week's own runs. Games already
+    under way carry live in-game lines, which the model can't price (a
+    scheduled run that GitHub starts late would otherwise bet them)."""
+    now = pd.Timestamp(now or datetime.now(timezone.utc)).tz_convert("UTC")
     kick = pd.to_datetime(rows["commence_time"], utc=True, errors="coerce")
-    return rows[kick < end]
+    return rows[(kick > now) & (kick < week_end(now))]
 
 
 def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,

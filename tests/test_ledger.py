@@ -49,8 +49,33 @@ def test_this_week_ends_after_monday_night():
                                            "2026-11-01T17:00:00Z"]})
     now = datetime(2026, 10, 25, 13, tzinfo=timezone.utc)
     assert len(picks.this_week(rows, now)) == 1
+    now = datetime(2026, 10, 26, 15, tzinfo=timezone.utc)
+    assert len(picks.this_week(rows, now)) == 1
     now = datetime(2026, 10, 27, 15, tzinfo=timezone.utc)
-    assert len(picks.this_week(rows, now)) == 2
+    assert len(picks.this_week(rows, now)) == 1   # Monday game under way
+
+
+def test_games_under_way_are_not_priced():
+    import picks
+    rows = pd.DataFrame({"commence_time": ["2026-10-25T17:02:00Z",
+                                           "2026-10-25T20:05:00Z"]})
+    now = datetime(2026, 10, 25, 18, 13, tzinfo=timezone.utc)
+    assert list(picks.this_week(rows, now).commence_time) == \
+        ["2026-10-25T20:05:00Z"]
+
+
+def test_bets_first_seen_after_kickoff_are_dropped():
+    late = datetime(2026, 10, 25, 18, 13, tzinfo=timezone.utc)
+    live = {**BET, "commence": "2026-10-25T17:02:00Z",
+            "first_seen": late.isoformat(), "last_seen": late.isoformat()}
+    assert ledger.merge([live], [], late, late.isoformat()) == []
+
+
+def test_kickoff_time_shift_is_the_same_bet():
+    early = datetime(2026, 10, 25, 13, tzinfo=timezone.utc)
+    h = ledger.merge([], [BET], early, early.isoformat())
+    moved = {**BET, "commence": "2026-10-25T17:03:00Z"}
+    assert ledger._key(moved) == ledger._key(h[0])
 
 
 def test_dropped_bet_is_removed_before_kickoff_kept_after():

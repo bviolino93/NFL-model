@@ -20,7 +20,10 @@ KEY = ("away", "home", "commence", "market", "pick")
 
 
 def _key(b: dict) -> str:
-    return "|".join(str(b[k]) for k in KEY)
+    # Only the kickoff date: books shift commence times to the actual
+    # kickoff (1:00 -> 1:03 PM), which must not make a bet look new.
+    return "|".join(str(b[k])[:10] if k == "commence" else str(b[k])
+                    for k in KEY)
 
 
 def load(path: str) -> list[dict]:
@@ -38,8 +41,14 @@ def merge(history: list[dict], picks: list[dict], now: datetime,
     last run before the game are kept and graded. Old files may hold
     bets marked pulled; those are dropped too."""
     current = {_key(p) for p in picks}
+    # Bets first seen after kickoff came from live in-game lines (a late
+    # run before the in-play filter); they were never real pre-game bets.
+    def pregame(b):
+        seen = pd.to_datetime(b.get("first_seen"), utc=True, errors="coerce")
+        return pd.isna(seen) or seen < pd.Timestamp(b["commence"])
+
     out = {_key(b): b for b in history
-           if not b.get("pulled")
+           if not b.get("pulled") and pregame(b)
            and (_key(b) in current
                 or pd.Timestamp(b["commence"]) <= pd.Timestamp(now))}
     for p in picks:
