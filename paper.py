@@ -6,7 +6,8 @@ spread, when they disagree by 3+ points, has run about break-even (52-54%
 where 52.4% breaks even at -110). Too thin to bet, too close to drop. This
 logs those bets live, the first time each game's line is seen (usually the
 Monday run, when next week's lines are fresh), using the ratings plus each
-side's injuries from the latest report, and grades them two ways:
+side's injuries from the latest report and players on IR, and grades them
+two ways:
 
   * against the final score, at -110 on the logged line
   * against the closing line (CLV, in points): the honest early read,
@@ -25,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from backtest import calibrate, project
-from nfl_data import load_games, load_team_games
+from nfl_data import fix_starters, load_games, load_team_games
 from nfl_power import PowerConfig
 
 GAP = 3.0
@@ -56,7 +57,7 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
     """The test's own home margin for each fair-line game: calibrated
     ratings (results through the previous week, with each side's projected
     starting QB) plus each side's injuries from the latest report out."""
-    games = load_games()
+    games = fix_starters(load_games())
     games = games[games.game_type == "REG"].copy()
     games["neutral"] = games["location"].astype(str).str.lower() == "neutral"
     games["margin"] = games["home_score"] - games["away_score"]
@@ -89,7 +90,7 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
     fr = fr[fr.game_id.isin(want)]
     try:
         from nfl_combined import injury_loads
-        L = injury_loads([season]).sort_values("week")
+        L = injury_loads([season], include_ir=True).sort_values("week")
     except Exception as exc:
         print(f"injuries unavailable: {exc}")
         L = pd.DataFrame(columns=["season", "week", "team", "off", "def"])

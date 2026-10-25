@@ -32,11 +32,13 @@ import os
 import time
 import urllib.request
 
+import numpy as np
 import pandas as pd
 
 RELEASES = "https://github.com/nflverse/nflverse-data/releases/download"
 GAMES_URL = f"{RELEASES}/schedules/games.csv"
 PBP_URL = f"{RELEASES}/pbp/play_by_play_{{season}}.parquet"
+ROSTER_URL = f"{RELEASES}/weekly_rosters/roster_weekly_{{season}}.parquet"
 
 CACHE_DIR = os.environ.get("NFL_CACHE_DIR", ".cache_nflverse")
 
@@ -178,6 +180,53 @@ def load_team_games(seasons, cache_dir: str = CACHE_DIR) -> pd.DataFrame:
     if not out:
         return pd.DataFrame()
     return pd.concat(out, ignore_index=True)
+
+
+def load_rosters(season: int, cache_dir: str = CACHE_DIR) -> pd.DataFrame:
+    """Weekly rosters with each player's status: ACT active, RES reserve
+    (IR and the like), INA inactive. IR players are not on the weekly
+    injury report, so this is the only place they show up."""
+    path = os.path.join(cache_dir, f"roster_weekly_{int(season)}.parquet")
+    age = 6.0 if int(season) >= _current_season() else None
+    _fetch(ROSTER_URL.format(season=int(season)), path, age)
+    r = pd.read_parquet(path)
+    r["team"] = _canon(r["team"])
+    return r
+
+
+def fix_starters(games: pd.DataFrame, cache_dir: str = CACHE_DIR
+                 ) -> pd.DataFrame:
+    """
+    nflverse lists a projected starting QB for unplayed games that can go
+    stale: it kept Jalen Hurts as the Eagles' starter while he was on IR.
+    For each unplayed game whose listed QB is not active on his team's
+    latest roster, use the team's most recent actual starter if he is
+    active, else no QB (the ratings then use the team's recent starter).
+    """
+    g = games.copy()
+    todo = g["home_score"].isna()
+    if not todo.any():
+        return g
+    try:
+        r = load_rosters(int(g.loc[todo, "season"].max()), cache_dir)
+    except Exception:
+        return g
+    last = r.sort_values("week").drop_duplicates("gsis_id", keep="last")
+    active = set(last.loc[last["status"] == "ACT", "gsis_id"])
+    played = g[~todo]
+    long = pd.concat([
+        played[["season", "week", f"{s}_team", f"{s}_qb_id"]]
+        .set_axis(["season", "week", "team", "qb"], axis=1)
+        for s in ("home", "away")]).sort_values(["season", "week"])
+    recent = long.groupby("team")["qb"].last().to_dict()
+    for side in ("home", "away"):
+        col = f"{side}_qb_id"
+        for i in g.index[todo]:
+            q = g.at[i, col]
+            if isinstance(q, str) and q not in active:
+                alt = recent.get(g.at[i, f"{side}_team"])
+                g.at[i, col] = alt if alt in active and alt != q else np.nan
+    return g
 
 
 def graded_games(games: pd.DataFrame) -> pd.DataFrame:

@@ -40,8 +40,8 @@ import numpy as np
 import pandas as pd
 
 from backtest import calibrate, project
-from nfl_data import CACHE_DIR, TEAM_CANON, graded_games, load_games, \
-    load_team_games
+from nfl_data import CACHE_DIR, TEAM_CANON, fix_starters, graded_games, \
+    load_games, load_rosters, load_team_games
 from nfl_power import PowerConfig
 from selector import build_outcome_models
 
@@ -65,12 +65,18 @@ def _nk(s):
     return re.sub(r"[^a-z]", "", s)
 
 
-def injury_loads(seasons, cache_dir: str = CACHE_DIR) -> pd.DataFrame:
+def injury_loads(seasons, cache_dir: str = CACHE_DIR,
+                 include_ir: bool = False) -> pd.DataFrame:
     """
     Per (season, week, team): sum over listed non-QB players of
     P(miss) x recent snap share, split offense/defense. Snap share is the
     mean over the team's previous four games, so only players who have
     actually been playing count.
+
+    `include_ir` also counts players on reserve lists (IR and the like),
+    who are not on the injury report at all. They count fully, and fade
+    out on their own as their recent snap share falls. The totals model
+    was fitted without them, so it keeps the default.
     """
     from nfl_data import _fetch
     base = "https://github.com/nflverse/nflverse-data/releases/download"
@@ -99,6 +105,24 @@ def injury_loads(seasons, cache_dir: str = CACHE_DIR) -> pd.DataFrame:
     inj["p"] = inj["report_status"].map(
         {"Out": 1.0, "Doubtful": 0.9, "Questionable": 0.25}).fillna(0.0)
     inj = inj[(inj["p"] > 0) & (inj["position"] != "QB")]
+    if include_ir:
+        keep = [inj[["season", "week", "team", "k", "p"]]]
+        for y in seasons:
+            try:
+                r = load_rosters(y, cache_dir)
+            except Exception:
+                continue
+            r = r[(r["status"] == "RES") & (r["position"] != "QB")]
+            if r.empty:
+                continue
+            # The latest roster also stands for the coming week.
+            r = pd.concat([r, r[r["week"] == r["week"].max()]
+                           .assign(week=r["week"].max() + 1)])
+            keep.append(pd.DataFrame({
+                "season": r["season"], "week": r["week"], "team": r["team"],
+                "k": r["full_name"].map(_nk), "p": 1.0}))
+        inj = (pd.concat(keep, ignore_index=True).sort_values("p")
+               .drop_duplicates(["season", "week", "team", "k"], keep="last"))
 
     rows = []
     for (s, t), grp in sn.groupby(["season", "team"]):
@@ -301,7 +325,7 @@ def predict_week(season: int, week: int, model: dict | None = None,
         with open(MODEL_FILE) as fh:
             model = json.load(fh)
     cfg = cfg or PowerConfig()
-    games = load_games()
+    games = fix_starters(load_games())
     up = games[(games["season"] == season) & (games["week"] == week)
                & games["home_score"].isna()].copy()
     if up.empty:
