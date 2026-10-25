@@ -179,15 +179,35 @@ def explain_pick(p, ctx: dict) -> str:
     return " ".join(w for w in why if w)
 
 
+def week_end(now: datetime) -> pd.Timestamp:
+    """End of the current NFL week: the coming Tuesday 12:00 UTC, after
+    Monday night's game. A run on Tuesday looks at the week ahead."""
+    now = pd.Timestamp(now).tz_convert("UTC")
+    days = (1 - now.weekday()) % 7 or 7
+    return (now + pd.Timedelta(days=days)).normalize() + pd.Timedelta(hours=12)
+
+
+def this_week(rows: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
+    """Only games kicking off before the current NFL week ends. Books post
+    next week's lines early; those move a lot on injury news, so the bot
+    waits for that week's own runs."""
+    end = week_end(now or datetime.now(timezone.utc))
+    kick = pd.to_datetime(rows["commence_time"], utc=True, errors="coerce")
+    return rows[kick < end]
+
+
 def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
                 min_ev: float = 0.02, use_wind: bool = True, overrides=(),
-                wind_fn=None):
+                wind_fn=None, week_only: bool = True):
     """
     The whole Get bets pipeline. Returns (picks, fair, priced). `overrides`
     are selector.Adjustment rows from the user; `wind_fn(home_abbr,
     commence_utc)` returns forecast mph (defaults to Open-Meteo).
+    `week_only` drops games after the current NFL week.
     """
     wind_fn = wind_fn or forecast_wind
+    if week_only:
+        rows = this_week(rows)
     games = load_games()
     mm, tm = sel.build_outcome_models(games)
     fair = sel.consensus(rows, mm, tm)
@@ -322,7 +342,11 @@ def main():
             "book", "stake", "win_chance", "ev", "why"]
     out = picks[cols].to_dict("records") if len(picks) else []
     out = json.loads(json.dumps(out, default=str))
-    history = ledger.merge(ledger.load(a.history), out, now, now.isoformat())
+    # Bets on later weeks are left over from before week_only; drop them.
+    end = week_end(now)
+    history = [b for b in ledger.load(a.history)
+               if pd.Timestamp(b["commence"]) < end]
+    history = ledger.merge(history, out, now, now.isoformat())
     try:
         history = ledger.grade(history, load_games(), ODDS_TEAM)
     except Exception as exc:  # scores can wait for the next run
