@@ -5466,11 +5466,19 @@ with tab_picks:
         _min_ev = _c2.number_input("Min EV %", 0.0, 20.0, 2.0, 0.5) / 100.0
         _bank = _c3.number_input("Bankroll", 0.0, 1e7, 1000.0, 100.0)
         _use_wind = st.toggle("Apply wind to totals", value=True)
+        _book_opts = ["draftkings", "fanduel", "betmgm", "williamhill_us",
+                      "espnbet", "betrivers", "fanatics", "hardrockbet",
+                      "ballybet", "betonlineag", "bovada", "mybookieag",
+                      "lowvig", "betus"]
+        # Remembered across visits via secrets: my_books = "draftkings,fanduel"
+        try:
+            _saved = [b.strip() for b in
+                      str(st.secrets.get("my_books", "")).split(",")
+                      if b.strip() in _book_opts]
+        except Exception:
+            _saved = []
         _mine = st.multiselect(
-            "Books you can bet at (empty = all)",
-            ["draftkings", "fanduel", "betmgm", "williamhill_us", "espnbet",
-             "betrivers", "fanatics", "hardrockbet", "ballybet", "betonlineag",
-             "bovada", "mybookieag", "lowvig", "betus"],
+            "Books you can bet at (empty = all)", _book_opts, default=_saved,
             help="Every book still informs the fair line; only these are "
                  "searched for bets.")
         if "sel_overrides" not in st.session_state:
