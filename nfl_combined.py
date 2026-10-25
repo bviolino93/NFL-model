@@ -347,7 +347,7 @@ def predict_week(season: int, week: int, model: dict | None = None,
                      "away": g.away_team, "spread_line": g.spread_line,
                      "total_line": g.total_line, "model_margin": mm,
                      "model_total": mt, "adj_spread": sum(cs.values()),
-                     "adj_total": sum(ct.values()),
+                     "adj_total": sum(ct.values()), "x": x,
                      "why_spread": cs, "why_total": ct})
     return pd.DataFrame(rows)
 
@@ -369,6 +369,52 @@ def reasons(contrib: dict, n: int = 3, min_pts: float = 0.1) -> str:
                      if abs(v) >= min_pts)
 
 
+def _fact(k, x, home, away):
+    """What is true about this game, in words, for feature k."""
+    v = x.get(k, 0.0)
+    side = home if v > 0 else away
+    return {
+        "model_gap": f"our power ratings rate {side} better than the line does",
+        "model_gap_t": ("our ratings project more points than the total"
+                        if v > 0 else
+                        "our ratings project fewer points than the total"),
+        "rest_diff": f"{side} has the rest advantage",
+        "h_bye": f"{home} is coming off a bye",
+        "a_bye": f"{away} is coming off a bye",
+        "h_qbchg": f"{home} is starting a different QB than last game",
+        "a_qbchg": f"{away} is starting a different QB than last game",
+        "qbchg_any": "there's a quarterback change in this game",
+        "div": "it's a division game",
+        "late": "it's a late-season game",
+        "short": "both teams are on a short week",
+        "inj_off": f"{side}'s offense is missing more regulars",
+        "inj_def": f"{side}'s defense is missing more regulars",
+        "inj_off_sum": "both offenses are missing regulars",
+        "inj_def_sum": "both defenses are missing regulars",
+        "wind": "it's windy", "cold": "it's freezing",
+    }.get(k, LABELS.get(k, k))
+
+
+def explain(contrib: dict, x: dict, home: str, away: str, market: str,
+            n: int = 3, min_pts: float = 0.1) -> str:
+    """
+    The biggest factors as sentences, e.g. "MIA is starting a different QB
+    than last game, which has historically favoured NYJ (+0.3 pts)."
+    """
+    out = []
+    for k, v in sorted(contrib.items(), key=lambda kv: -abs(kv[1]))[:n]:
+        if abs(v) < min_pts:
+            continue
+        if market == "totals":
+            helps = "the over" if v > 0 else "the under"
+        else:
+            helps = home if v > 0 else away
+        f = _fact(k, x, home, away)
+        out.append(f"{f[0].upper() + f[1:]}, which has historically favoured "
+                   f"{helps} ({abs(v):.1f} pts).")
+    return " ".join(out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", type=int, default=2022)
@@ -381,10 +427,10 @@ def main():
         from nfl_data import _current_season
         p = predict_week(_current_season(), a.week)
         for r in p.itertuples():
-            print(f"{r.away} @ {r.home}: line {r.spread_line:+g} -> "
-                  f"{r.adj_spread:+.2f} ({reasons(r.why_spread)}); total "
-                  f"{r.total_line:g} -> {r.adj_total:+.2f} "
-                  f"({reasons(r.why_total)})")
+            print(f"{r.away} @ {r.home}: spread {r.adj_spread:+.2f}: "
+                  f"{explain(r.why_spread, r.x, r.home, r.away, 'spreads')}"
+                  f"\n    total {r.adj_total:+.2f}: "
+                  f"{explain(r.why_total, r.x, r.home, r.away, 'totals')}")
         return
     fr = build_frame()
     if a.export:

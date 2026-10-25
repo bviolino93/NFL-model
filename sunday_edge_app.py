@@ -5534,11 +5534,13 @@ with tab_picks:
                     if abs(_r.adj_spread) >= 0.05:
                         _adj.append(_sel.Adjustment(
                             _hn, "spreads", float(_r.adj_spread), "combined",
-                            _nc.reasons(_r.why_spread)))
+                            _nc.explain(_r.why_spread, _r.x, _r.home, _r.away,
+                                        "spreads")))
                     if abs(_r.adj_total) >= 0.05:
                         _adj.append(_sel.Adjustment(
                             _hn, "totals", float(_r.adj_total), "combined",
-                            _nc.reasons(_r.why_total)))
+                            _nc.explain(_r.why_total, _r.x, _r.home, _r.away,
+                                        "totals")))
             if _use_wind:
                 for _f in _fair.values():
                     _h = ODDS_TEAM.get(_f.home_team)
@@ -5551,7 +5553,8 @@ with tab_picks:
                     if _pts:
                         _adj.append(_sel.Adjustment(
                             _f.home_team, "totals", _pts, "wind",
-                            f"{_mph:.0f} mph forecast"))
+                            f"{_mph:.0f} mph wind is forecast, which "
+                            f"keeps scoring down ({abs(_pts):.1f} pts)."))
             _sel.apply_adjustments(_fair, _adj)
             _pol = _sel.Policy(min_ev=_min_ev)
             _priced = _sel.price_offers(_rows, _fair, _mm, _tm, _pol)
@@ -5581,18 +5584,28 @@ with tab_picks:
                         f" {_p.point:+g}" if _p.market == "spreads"
                         else f" {_p.point:g}")
                     _what = " ML" if _p.market == "h2h" else ""
-                    _why = {"market": "this book is off the sharp market",
-                            "wind": "wind", "override": "your override",
-                            "combined": "matchup factors"}
-                    _why = ", ".join(_why.get(x, x)
-                                     for x in str(_p.sources).split(","))
+                    _src = str(_p.sources).split(",")
+                    _why = []
+                    if "market" in _src:
+                        if _p.market == "totals":
+                            _fv = f"put the total at {_p.fair_market:.1f}"
+                        else:
+                            _fav = (_p.home if _p.fair_market >= 0
+                                    else _p.away)
+                            _fv = (f"make {_fav} a {abs(_p.fair_market):.1f}-point "
+                                   f"favourite")
+                        _why.append(f"{_p.book} hasn't caught up with the "
+                                    f"sharp books, which {_fv}.")
+                    if _p.notes:
+                        _why.append(_p.notes)
+                    if "override" in _src:
+                        _why.append("Your override applies.")
                     st.markdown(
                         f"**{_p.pick}{_pt}{_what} ({int(_p.price):+d})** at "
                         f"**{_p.book}** \u2014 stake **${_p.stake:,.2f}** "
                         f"\u00b7 {_p.away} @ {_p.home} \u00b7 win chance "
-                        f"{_p.p_win / max(1e-9, 1 - _p.p_push) * 100:.1f}% "
-                        f"\u00b7 EV {_p.ev * 100:.1f}% \u00b7 why: {_why}"
-                        + (f" ({_p.notes})" if _p.notes else ""))
+                        f"{_p.p_win / max(1e-9, 1 - _p.p_push) * 100:.1f}%"
+                        f"\n\n{' '.join(_why)}")
                 _show = _picks.assign(
                     game=_picks["away"] + " @ " + _picks["home"],
                     p_win=(_picks["p_win"] * 100).round(1),
