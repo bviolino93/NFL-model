@@ -1,11 +1,15 @@
 name: Picks
 
 # Runs the pick engine (picks.py) against live odds and publishes the result
-# three ways:
+# a few ways:
 #   * the run's summary page (Actions tab -> latest "Picks" run)
 #   * the `picks` branch: README.md renders on github.com on any phone,
 #     https://github.com/bviolino93/NFL-model/tree/picks
-#   * GitHub Pages, if enabled (Settings -> Pages -> Source: GitHub Actions)
+#   * the dashboard on GitHub Pages, once enabled (Settings -> Pages ->
+#     Source: GitHub Actions): https://bviolino93.github.io/NFL-model/
+#
+# history.json on the picks branch keeps every bet and grades it from
+# nflverse final scores; each run reads it back and adds to it.
 #
 # Needs repository secret ODDS_API_KEY. Optional repository variable
 # MY_BOOKS, e.g. "draftkings,fanduel", to only suggest books you can use.
@@ -47,13 +51,18 @@ jobs:
           key: nflverse-picks-${{ github.run_id }}
           restore-keys: nflverse-picks-
       - run: pip install pandas numpy pyarrow requests
+      - name: Restore bet history from the picks branch
+        run: |
+          mkdir -p site
+          git fetch -q --depth 1 origin picks && \
+            git show FETCH_HEAD:history.json > site/history.json || true
       - name: Run picks
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           MY_BOOKS: ${{ vars.MY_BOOKS }}
         run: |
           python picks.py --out site/index.html --json site/picks.json \
-            --md site/README.md --bankroll "${{ inputs.bankroll || '1000' }}"
+            --md site/README.md --history site/history.json --bankroll "${{ inputs.bankroll || '1000' }}"
           cat site/README.md >> "$GITHUB_STEP_SUMMARY"
       - name: Publish to the picks branch
         run: |

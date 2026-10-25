@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sunday Edge Picks</title>
+<!-- Template for the picks dashboard. picks.py replaces the DATA line with
+     this run's bets, fair lines and graded history, so the page needs no
+     server or fetch and works from GitHub Pages or as a saved file. -->
+<style>
+:root{--bg:#0b1120;--panel:#131c31;--panel2:#1a2540;--fg:#e8eef8;--mute:#8b9bb4;
+--line:rgba(139,155,180,.18);--acc:#4f9dff;--ok:#2fbf71;--bad:#ef5d5d;--warn:#f0b43c}
+@media (prefers-color-scheme: light){:root{--bg:#f3f5f9;--panel:#fff;--panel2:#eef2f8;
+--fg:#0f172a;--mute:#5b6b82;--line:rgba(15,23,42,.1);--acc:#1f6fe0;--ok:#16924f;--bad:#cf3a3a;--warn:#b7791f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 40px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 16px;margin-bottom:18px}
+h1{font-size:1.5rem;margin:0;letter-spacing:-.01em}
+h1 span{color:var(--acc)}
+.sub{color:var(--mute);font-size:.85rem}
+h2{font-size:1.05rem;margin:28px 0 10px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.kpi b{display:block;font-size:1.45rem;font-variant-numeric:tabular-nums;line-height:1.2}
+.kpi small{color:var(--mute);font-size:.78rem}
+.bar{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 4px}
+.chip{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:999px;
+padding:5px 12px;font:inherit;font-size:.85rem;cursor:pointer}
+.chip[aria-pressed=true]{background:var(--acc);border-color:var(--acc);color:#fff}
+.day{color:var(--mute);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;margin:18px 0 8px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.card .top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.bet{font-size:1.15rem;font-weight:700;line-height:1.25}
+.pill{font-size:.72rem;background:var(--panel2);border-radius:999px;padding:2px 9px;white-space:nowrap;color:var(--mute)}
+.game{color:var(--mute);font-size:.85rem}
+.nums{display:flex;gap:18px;font-variant-numeric:tabular-nums}
+.nums span{display:flex;flex-direction:column;font-size:.72rem;color:var(--mute)}
+.nums b{font-size:1rem;color:var(--fg)}
+.meter{height:6px;border-radius:3px;background:var(--panel2);overflow:hidden}
+.meter i{display:block;height:100%;background:var(--acc)}
+.why{font-size:.88rem;margin:0}
+.empty{background:var(--panel);border:1px dashed var(--line);border-radius:14px;padding:22px;color:var(--mute);text-align:center}
+.chart{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;margin-top:10px;position:relative}
+.chart svg{display:block;width:100%;height:auto}
+.tip{position:absolute;pointer-events:none;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+padding:6px 9px;font-size:.78rem;white-space:nowrap;display:none}
+.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;margin-top:10px}
+table{width:100%;border-collapse:collapse;font-size:.84rem;font-variant-numeric:tabular-nums}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--mute);font-weight:600;font-size:.75rem;text-transform:uppercase;letter-spacing:.04em}
+td.r,th.r{text-align:right}
+tr:last-child td{border-bottom:0}
+.win{color:var(--ok);font-weight:600}.loss{color:var(--bad);font-weight:600}.push,.open{color:var(--mute)}
+details{margin-top:28px}summary{cursor:pointer;font-weight:600}
+footer{color:var(--mute);font-size:.75rem;margin-top:32px}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Sunday <span>Edge</span></h1>
+  <div class="sub" id="updated"></div>
+</header>
+
+<section class="kpis" id="slate-kpis"></section>
+<div class="bar" id="filters"></div>
+<section id="bets"></section>
+
+<h2>Track record</h2>
+<section class="kpis" id="record-kpis"></section>
+<div class="chart" id="chart"><div class="tip" id="tip"></div></div>
+<div class="tablewrap"><table id="history"></table></div>
+
+<details>
+  <summary>Fair lines this run</summary>
+  <div class="tablewrap"><table id="fair"></table></div>
+</details>
+
+<footer>Stakes are quarter-Kelly on the bankroll shown, capped at 2% per bet and
+10% per slate. Win chances are model estimates, not guarantees. 21+ where legal;
+1-800-GAMBLER.</footer>
+</main>
+
+<script id="data" type="application/json">/*DATA*/</script>
+<script>
+(function () {
+  const D = JSON.parse(document.getElementById("data").textContent);
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+  const money = (x) => (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString(undefined,
+    {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const signed = (x) => (x > 0 ? "+" : "") + money(x);
+  const pct = (x, d = 1) => (x * 100).toFixed(d) + "%";
+  const odds = (p) => (p > 0 ? "+" : "") + Math.round(p);
+  const ET = {timeZone: "America/New_York"};
+  const kick = (s) => new Date(s).toLocaleString("en-US",
+    {...ET, weekday: "short", hour: "numeric", minute: "2-digit"}) + " ET";
+  const dayOf = (s) => new Date(s).toLocaleDateString("en-US",
+    {...ET, weekday: "long", month: "short", day: "numeric"});
+  const short = (team) => team.split(" ").slice(-1)[0];
+  const label = (b) => {
+    if (b.market === "totals") return `${b.pick} ${b.point}`;
+    const pt = b.point > 0 ? "+" + b.point : String(b.point);
+    return `${b.pick} ${pt}`;
+  };
+  const kpi = (box, value, name, cls) => {
+    const k = el("div", "kpi");
+    const v = el("b", cls || "", value);
+    k.append(v, el("small", "", name));
+    box.append(k);
+  };
+
+  $("updated").textContent = `Updated ${D.updated} · $${D.bankroll.toLocaleString()} bankroll`;
+
+  // ---- this slate
+  const picks = D.picks;
+  const slate = $("slate-kpis");
+  const stake = picks.reduce((s, b) => s + b.stake, 0);
+  kpi(slate, String(picks.length), picks.length === 1 ? "bet" : "bets");
+  kpi(slate, money(stake), "total stake");
+  kpi(slate, picks.length ? pct(picks.reduce((s, b) => s + b.win_chance, 0) / picks.length) : "—",
+      "average win chance");
+  kpi(slate, picks.length ? signed(picks.reduce((s, b) => s + b.stake * b.ev, 0)) : "—",
+      "expected profit");
+
+  const markets = {all: "All", totals: "Totals", spreads: "Spreads"};
+  const present = new Set(picks.map((b) => b.market));
+  let filter = "all";
+  const bar = $("filters");
+  Object.entries(markets).forEach(([key, name]) => {
+    if (key !== "all" && !present.has(key)) return;
+    const c = el("button", "chip", name);
+    c.type = "button";
+    c.setAttribute("aria-pressed", String(key === filter));
+    c.addEventListener("click", () => {
+      filter = key;
+      bar.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === c)));
+      drawBets();
+    });
+    bar.append(c);
+  });
+  if (present.size < 2) bar.hidden = true;
+
+  function drawBets() {
+    const box = $("bets");
+    box.replaceChildren();
+    const shown = picks.filter((b) => filter === "all" || b.market === filter)
+      .sort((a, b) => a.commence.localeCompare(b.commence) || b.ev - a.ev);
+    if (!shown.length) {
+      box.append(el("div", "empty", "No bets right now. Nothing beats the sharp market by " +
+        "enough, which is the usual answer and the right one."));
+      return;
+    }
+    let day = null, grid = null;
+    shown.forEach((b) => {
+      const d = dayOf(b.commence);
+      if (d !== day) {
+        day = d;
+        box.append(el("div", "day", d));
+        grid = el("div", "cards");
+        box.append(grid);
+      }
+      const c = el("article", "card");
+      const top = el("div", "top");
+      const t = el("div");
+      t.append(el("div", "bet", `${label(b)} (${odds(b.price)})`),
+               el("div", "game", `${short(b.away)} @ ${short(b.home)} · ${kick(b.commence)}`));
+      top.append(t, el("span", "pill", b.book));
+      const nums = el("div", "nums");
+      [[money(b.stake), "stake"], [pct(b.win_chance), "win chance"], [pct(b.ev), "edge"]]
+        .forEach(([v, n]) => {
+          const s = el("span");
+          s.append(el("b", "", v), document.createTextNode(n));
+          nums.append(s);
+        });
+      const m = el("div", "meter");
+      const fill = el("i");
+      fill.style.width = pct(b.win_chance);
+      m.append(fill);
+      c.append(top, nums, m, el("p", "why", b.why));
+      grid.append(c);
+    });
+  }
+  drawBets();
+
+  // ---- track record
+  const H = D.history.bets;
+  const S = D.history.summary;
+  const rec = $("record-kpis");
+  const graded = H.filter((b) => b.result).sort((a, b) => a.commence.localeCompare(b.commence));
+  kpi(rec, `${S.wins}-${S.losses}${S.pushes ? "-" + S.pushes : ""}`, "record (W-L-P)");
+  kpi(rec, graded.length ? signed(S.profit) : "—", "profit",
+      graded.length ? (S.profit >= 0 ? "win" : "loss") : "");
+  kpi(rec, S.roi == null ? "—" : (S.roi > 0 ? "+" : "") + pct(S.roi), "return on stakes");
+  kpi(rec, String(H.filter((b) => !b.result).length), "bets waiting on a result");
+
+  const chart = $("chart");
+  function drawChart() {
+    chart.querySelectorAll("svg,.empty").forEach((n) => n.remove());
+    if (graded.length < 2) {
+      chart.append(el("div", "empty", graded.length
+        ? "The profit chart starts after the second graded bet."
+        : "Bets are graded automatically once final scores are posted."));
+      return;
+    }
+    let run = 0;
+    const pts = [{i: 0, y: 0}].concat(graded.map((b, i) => ({i: i + 1, y: (run += b.profit), b})));
+    const W = Math.max(300, chart.clientWidth - 24), Hh = 200, P = {l: 52, r: 10, t: 10, b: 22};
+    const ys = pts.map((p) => p.y), lo = Math.min(0, ...ys), hi = Math.max(0, ...ys);
+    const pad = (hi - lo) * 0.1 || 10;
+    const x = (i) => P.l + (i / (pts.length - 1)) * (W - P.l - P.r);
+    const y = (v) => P.t + (1 - (v - (lo - pad)) / (hi - lo + 2 * pad)) * (Hh - P.t - P.b);
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${Hh}`);
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "Cumulative profit by bet");
+    const add = (tag, attrs) => {
+      const n = document.createElementNS(NS, tag);
+      Object.entries(attrs).forEach(([k, v]) => n.setAttribute(k, v));
+      svg.append(n);
+      return n;
+    };
+    const cs = getComputedStyle(document.documentElement);
+    const col = (v) => cs.getPropertyValue(v).trim();
+    [lo - pad, 0, hi + pad].forEach((v) => {
+      add("line", {x1: P.l, x2: W - P.r, y1: y(v), y2: y(v), stroke: col("--line")});
+      add("text", {x: P.l - 6, y: y(v) + 4, "text-anchor": "end", "font-size": 11,
+                   fill: col("--mute")}).textContent = money(Math.round(v));
+    });
+    add("text", {x: W - P.r, y: Hh - 4, "text-anchor": "end", "font-size": 11,
+                 fill: col("--mute")}).textContent = `${graded.length} graded bets`;
+    const last = pts[pts.length - 1].y;
+    add("path", {d: pts.map((p, k) => `${k ? "L" : "M"}${x(p.i)},${y(p.y)}`).join(""),
+                 fill: "none", stroke: col(last >= 0 ? "--ok" : "--bad"), "stroke-width": 2.5,
+                 "stroke-linejoin": "round"});
+    const dot = add("circle", {r: 4, fill: col("--acc"), visibility: "hidden"});
+    const tip = $("tip");
+    svg.addEventListener("pointermove", (e) => {
+      const r = svg.getBoundingClientRect();
+      const i = Math.round(((e.clientX - r.left) * (W / r.width) - P.l) / (W - P.l - P.r) * (pts.length - 1));
+      const p = pts[Math.max(1, Math.min(pts.length - 1, i))];
+      dot.setAttribute("cx", x(p.i)); dot.setAttribute("cy", y(p.y));
+      dot.setAttribute("visibility", "visible");
+      tip.textContent = `${label(p.b)} · ${p.b.result} ${signed(p.b.profit)} · total ${signed(p.y)}`;
+      tip.style.display = "block";
+      const left = (x(p.i) / W) * r.width + 12;
+      tip.style.left = Math.min(left, chart.clientWidth - tip.offsetWidth - 8) + "px";
+      tip.style.top = (y(p.y) / Hh) * r.height - 10 + "px";
+    });
+    svg.addEventListener("pointerleave", () => {
+      tip.style.display = "none";
+      dot.setAttribute("visibility", "hidden");
+    });
+    chart.append(svg);
+  }
+  drawChart();
+  let wait;
+  window.addEventListener("resize", () => { clearTimeout(wait); wait = setTimeout(drawChart, 150); });
+
+  const table = (id, heads, rows) => {
+    const t = $(id);
+    const hr = el("tr");
+    heads.forEach(([h, r]) => hr.append(el("th", r ? "r" : "", h)));
+    t.append(hr);
+    rows.forEach((cells) => {
+      const tr = el("tr");
+      cells.forEach(([v, cls]) => tr.append(el("td", cls || "", v)));
+      t.append(tr);
+    });
+  };
+  const past = H.slice().sort((a, b) => b.commence.localeCompare(a.commence));
+  if (past.length) {
+    table("history", [["Date"], ["Game"], ["Bet"], ["Book"], ["Stake", 1], ["Win %", 1],
+                      ["Final"], ["Result"], ["Profit", 1]],
+      past.map((b) => [
+        [new Date(b.commence).toLocaleDateString("en-US", {...ET, month: "short", day: "numeric"})],
+        [`${short(b.away)} @ ${short(b.home)}`],
+        [`${label(b)} (${odds(b.price)})`], [b.book],
+        [money(b.stake), "r"], [pct(b.win_chance, 0), "r"],
+        [b.final || ""], [b.result || "open", b.result || "open"],
+        [b.profit == null ? "" : signed(b.profit), "r " + (b.result || "")],
+      ]));
+  } else {
+    $("history").closest(".tablewrap").hidden = true;
+  }
+
+  if (D.fair.length) {
+    table("fair", [["Game"], ["Home by (market)", 1], ["Home by (model)", 1], ["Market total", 1],
+                   ["Model total", 1]],
+      D.fair.map((f) => [[`${short(f.away)} @ ${short(f.home)}`],
+        [(f.market_margin > 0 ? "+" : "") + f.market_margin.toFixed(1), "r"],
+        [(f.margin > 0 ? "+" : "") + f.margin.toFixed(1), "r"],
+        [f.market_total.toFixed(1), "r"], [f.total.toFixed(1), "r"]]));
+  } else {
+    $("fair").closest("details").hidden = true;
+  }
+})();
+</script>
+</body>
+</html>
