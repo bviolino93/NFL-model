@@ -1,0 +1,59 @@
+name: Check one game
+
+# Runs a single game through the model (game.py) against live odds:
+# the model's spread and total, the best DraftKings/FanDuel price for each
+# side, and whether any of it is a bet. On a phone: GitHub app -> this repo
+# -> Actions -> "Check one game" -> Run workflow, type a team.
+#
+# The report lands on the run's summary page and as a comment on the
+# "Picks alerts" issue, so it pushes to your phone. It doesn't place or log
+# bets; the scheduled Picks runs still do that. ~6 Odds API credits a run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      game:
+        description: "Team or matchup, e.g. Chiefs, or KC SEA"
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  game:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache nflverse
+        uses: actions/cache@v4
+        with:
+          path: .cache_nflverse
+          key: nflverse-game-${{ github.run_id }}
+          restore-keys: |
+            nflverse-picks-
+            nflverse-game-
+      - run: pip install pandas numpy pyarrow requests
+      - name: Run the game
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          MY_BOOKS: ${{ vars.MY_BOOKS || 'draftkings,fanduel' }}
+          GAME: ${{ inputs.game }}
+        run: |
+          python game.py "$GAME" --md game.md
+          cat game.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Send it to the Picks alerts issue
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh issue list --state open --search "Picks alerts in:title" \
+                --json number -q '.[0].number')
+          [ -n "$n" ] || exit 0
+          { cat game.md; echo; echo "@${{ github.repository_owner }}"; } \
+            > game_body.md
+          gh issue comment "$n" --body-file game_body.md
