@@ -19,7 +19,6 @@ measured coefficients) so this file runs without importing the app.
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import os
 from datetime import datetime, timezone
@@ -27,6 +26,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import requests
 
+import ledger
 import nfl_combined
 import selector as sel
 from log_lines import _rows
@@ -246,52 +246,25 @@ def _bet_label(p) -> str:
     return f"{p.pick} {pt} ({int(p.price):+d})"
 
 
-def render_html(picks: pd.DataFrame, fair: dict, made: str) -> str:
-    e = html.escape
-    cards = []
-    for p in picks.itertuples():
-        kick = pd.to_datetime(p.commence, utc=True).tz_convert(
-            "America/New_York").strftime("%a %-I:%M %p ET")
-        cards.append(
-            f'<article><h2>{e(_bet_label(p))}</h2>'
-            f'<p class="meta">{e(p.book)} &middot; stake ${p.stake:,.2f} '
-            f'&middot; win chance {p.win_chance * 100:.1f}% &middot; EV '
-            f'{p.ev * 100:.1f}%</p>'
-            f'<p class="game">{e(p.away)} @ {e(p.home)} &middot; {kick}</p>'
-            f'<p>{e(p.why)}</p></article>')
-    if not cards:
-        cards.append('<article><h2>No bets right now</h2><p>Nothing beats '
-                     'the sharp market by enough. That is the usual answer, '
-                     'and the right one.</p></article>')
-    lines = "".join(
-        f"<tr><td>{e(f.away_team)} @ {e(f.home_team)}</td>"
-        f"<td>{f.market_margin:+.1f}</td><td>{f.margin:+.1f}</td>"
-        f"<td>{f.market_total:.1f}</td><td>{f.total:.1f}</td></tr>"
-        for f in fair.values())
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sunday Edge Picks</title><style>
-:root{{--bg:#0a1020;--card:#111a2e;--fg:#e8f0fa;--mute:#8ea4ba;--acc:#60a5fa}}
-@media (prefers-color-scheme: light){{:root{{--bg:#f5f7fb;--card:#fff;--fg:#0a1020;--mute:#55657a}}}}
-body{{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}}
-main{{max-width:720px;margin:0 auto;padding:24px 16px}}
-h1{{font-size:1.4rem;margin:0}} .sub{{color:var(--mute);margin:4px 0 20px}}
-article{{background:var(--card);border-radius:14px;padding:14px 16px;margin:0 0 12px}}
-article h2{{font-size:1.15rem;margin:0 0 4px;color:var(--acc)}}
-.meta{{font-weight:600;margin:0}} .game{{color:var(--mute);margin:0 0 6px}}
-table{{width:100%;border-collapse:collapse;font-size:.85rem}}
-td,th{{padding:6px 4px;border-bottom:1px solid rgba(128,128,128,.2);text-align:right}}
-td:first-child,th:first-child{{text-align:left}}
-details{{margin-top:20px}} footer{{color:var(--mute);font-size:.75rem;margin-top:24px}}
-</style></head><body><main>
-<h1>Sunday Edge Picks</h1><p class="sub">Updated {e(made)}</p>
-{''.join(cards)}
-<details><summary>Fair lines (home margin, total): market vs adjusted</summary>
-<table><tr><th>Game</th><th>Mkt</th><th>Adj</th><th>Mkt tot</th><th>Adj tot</th></tr>
-{lines}</table></details>
-<footer>Stakes are quarter-Kelly on a $1,000 bankroll, capped at 2% per bet
-and 10% per slate. Win chances are model estimates, not guarantees. 21+ where
-legal; 1-800-GAMBLER.</footer></main></body></html>"""
+def render_html(picks: pd.DataFrame, fair: dict, made: str, bankroll: float,
+                history: list[dict]) -> str:
+    """The dashboard: dashboard.html with this run's data embedded, so the
+    page works from GitHub Pages, the picks branch or a saved copy."""
+    cols = ["away", "home", "commence", "market", "pick", "point", "price",
+            "book", "stake", "win_chance", "ev", "why"]
+    data = {
+        "updated": made, "bankroll": bankroll,
+        "picks": picks[cols].to_dict("records") if len(picks) else [],
+        "fair": [{"away": f.away_team, "home": f.home_team,
+                  "market_margin": f.market_margin, "margin": f.margin,
+                  "market_total": f.market_total, "total": f.total}
+                 for f in fair.values()],
+        "history": {"summary": ledger.summary(history), "bets": history},
+    }
+    blob = json.dumps(data, default=str).replace("</", "<\\/")
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "dashboard.html")) as fh:
+        return fh.read().replace("/*DATA*/", blob)
 
 
 def render_md(picks: pd.DataFrame, made: str) -> str:
@@ -319,6 +292,8 @@ def main():
     ap.add_argument("--out", default="site/index.html")
     ap.add_argument("--json", default="site/picks.json")
     ap.add_argument("--md", default="site/README.md")
+    ap.add_argument("--history", default="site/history.json",
+                    help="bet ledger; read, extended with this run, graded")
     ap.add_argument("--bankroll", type=float, default=1000.0)
     ap.add_argument("--min-ev", type=float, default=0.02)
     ap.add_argument("--books", default=os.environ.get("MY_BOOKS", ""),
@@ -339,16 +314,24 @@ def main():
         rows = fetch_rows(key)
     books = [b.strip() for b in a.books.split(",") if b.strip()]
     picks, fair, _ = build_picks(rows, books, a.bankroll, a.min_ev)
-    made = datetime.now(timezone.utc).strftime("%a %b %-d, %H:%M UTC")
-    for path in (a.out, a.json, a.md):
+    now = datetime.now(timezone.utc)
+    made = now.strftime("%a %b %-d, %H:%M UTC")
+    for path in (a.out, a.json, a.md, a.history):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(a.out, "w") as fh:
-        fh.write(render_html(picks, fair, made))
-    with open(a.md, "w") as fh:
-        fh.write(render_md(picks, made))
     cols = ["away", "home", "commence", "market", "pick", "point", "price",
             "book", "stake", "win_chance", "ev", "why"]
     out = picks[cols].to_dict("records") if len(picks) else []
+    out = json.loads(json.dumps(out, default=str))
+    history = ledger.merge(ledger.load(a.history), out, now, now.isoformat())
+    try:
+        history = ledger.grade(history, load_games(), ODDS_TEAM)
+    except Exception as exc:  # scores can wait for the next run
+        print(f"grading skipped: {exc}")
+    ledger.save(a.history, history)
+    with open(a.out, "w") as fh:
+        fh.write(render_html(picks, fair, made, a.bankroll, history))
+    with open(a.md, "w") as fh:
+        fh.write(render_md(picks, made))
     with open(a.json, "w") as fh:
         json.dump({"updated": made, "picks": out}, fh, indent=2, default=str)
     print(f"{len(out)} bets")
