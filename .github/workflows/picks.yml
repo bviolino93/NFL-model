@@ -15,14 +15,28 @@ name: Picks
 # MY_BOOKS to change which books bets are placed at (default
 # "draftkings,fanduel"; every book still informs the fair line).
 # Each run costs ~6 Odds API credits (us + eu regions, 3 markets).
+#
+# College football (cfb_picks.py) runs on its own schedule below plus the
+# Thursday run, publishing to /cfb/ on the same site with its own
+# history in cfb/history.json; ~4 credits a run (us + eu, 2 markets).
 
 on:
   schedule:
     - cron: "0 15 * 9-12,1-2 0"    # Sunday 15:00 UTC, before the early games
     - cron: "0 19 * 9-12,1-2 4"    # Thursday 19:00 UTC
     - cron: "0 20 * 9-12,1-2 1"    # Monday 20:00 UTC
+    # College only: Sunday evening when next Saturday's lines go up,
+    # Tuesday, and Saturday morning before the noon games.
+    - cron: "0 22 * 8-12,1 0"
+    - cron: "0 20 * 8-12,1 2"
+    - cron: "0 15 * 8-12,1 6"
   workflow_dispatch:
     inputs:
+      league:
+        description: "Which picks to run"
+        type: choice
+        options: [both, nfl, cfb]
+        default: both
       bankroll:
         description: "Bankroll for stake sizing"
         default: "1000"
@@ -56,14 +70,36 @@ jobs:
           path: .cache_nflverse
           key: nflverse-picks-${{ github.run_id }}
           restore-keys: nflverse-picks-
-      - run: pip install pandas numpy pyarrow requests
-      - name: Restore bet history from the picks branch
+      - name: Cache college data
+        uses: actions/cache@v4
+        with:
+          path: .cache_cfb
+          key: cfb-${{ github.run_id }}
+          restore-keys: cfb-
+      - run: pip install pandas numpy pyarrow requests scipy scikit-learn
+      - name: Which leagues
+        id: which
+        # NFL on its three crons; college on its own three plus Thursday.
+        run: |
+          s="${{ github.event.schedule }}"
+          l="${{ inputs.league || 'both' }}"
+          nfl=false; cfb=false
+          case "$s" in
+            "") [ "$l" != cfb ] && nfl=true; [ "$l" != nfl ] && cfb=true ;;
+            *" 4") nfl=true; cfb=true ;;
+            *" 8-12,1 "*) cfb=true ;;
+            *) nfl=true ;;
+          esac
+          echo "nfl=$nfl" >> "$GITHUB_OUTPUT"; echo "cfb=$cfb" >> "$GITHUB_OUTPUT"
+      - name: Restore the published site from the picks branch
+        # Everything, so a college-only run republishes the NFL page as it
+        # was (and the other way round), with both bet histories.
         run: |
           mkdir -p site
           git fetch -q --depth 1 origin picks && \
-            git show FETCH_HEAD:history.json > site/history.json || true
-          git show FETCH_HEAD:paper.json > site/paper.json 2>/dev/null || true
+            git archive FETCH_HEAD | tar -x -C site || true
       - name: Run picks
+        if: steps.which.outputs.nfl == 'true'
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           MY_BOOKS: ${{ vars.MY_BOOKS || 'draftkings,fanduel' }}
@@ -75,6 +111,16 @@ jobs:
             printf '**Test alert.** New bets will show up like this.\n\n' > alert.md
             cat site/README.md >> alert.md
           fi
+      - name: Run college picks
+        if: steps.which.outputs.cfb == 'true'
+        # Never blocks the NFL page from publishing.
+        continue-on-error: true
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          MY_BOOKS: ${{ vars.MY_BOOKS || 'draftkings,fanduel' }}
+        run: |
+          python cfb_picks.py --out site/cfb/index.html --json site/cfb/picks.json \
+            --history site/cfb/history.json --bankroll "${{ inputs.bankroll || '1000' }}"
       - name: Publish to the picks branch
         run: |
           cd site

@@ -3,3 +3,4 @@
 __pycache__/
 *.pyc
 sweep.csv
+.cache_cfb/

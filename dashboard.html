@@ -54,14 +54,15 @@ td.r,th.r{text-align:right}
 tr:last-child td{border-bottom:0}
 .win{color:var(--ok);font-weight:600}.loss{color:var(--bad);font-weight:600}.push,.open{color:var(--mute)}
 details{margin-top:28px}summary{cursor:pointer;font-weight:600}
+#nav{color:var(--acc);text-decoration:none;margin-left:8px;white-space:nowrap}
 footer{color:var(--mute);font-size:.75rem;margin-top:32px}
 </style>
 </head>
 <body>
 <main>
 <header>
-  <h1>Sunday <span>Edge</span></h1>
-  <div class="sub" id="updated"></div>
+  <h1 id="title">Sunday <span>Edge</span></h1>
+  <div class="sub"><span id="updated"></span> <a id="nav" href="cfb/">College picks →</a></div>
 </header>
 
 <section class="kpis" id="slate-kpis"></section>
@@ -111,7 +112,8 @@ footer{color:var(--mute);font-size:.75rem;margin-top:32px}
     {...ET, weekday: "short", hour: "numeric", minute: "2-digit"}) + " ET";
   const dayOf = (s) => new Date(s).toLocaleDateString("en-US",
     {...ET, weekday: "long", month: "short", day: "numeric"});
-  const short = (team) => team.split(" ").slice(-1)[0];
+  // NFL names shorten to the nickname; college pages pass school names.
+  const short = (team) => (D.names && D.names[team]) || team.split(" ").slice(-1)[0];
   const label = (b) => {
     if (b.market === "totals") return `${b.pick} ${b.point}`;
     const pt = b.point > 0 ? "+" + b.point : String(b.point);
@@ -124,6 +126,12 @@ footer{color:var(--mute);font-size:.75rem;margin-top:32px}
     box.append(k);
   };
 
+  if (D.title) {
+    const [a, b] = D.title.split(" ");
+    $("title").replaceChildren(document.createTextNode(a + " "), el("span", "", b));
+    document.title = D.title + " Picks";
+  }
+  if (D.nav) { $("nav").href = D.nav.href; $("nav").textContent = D.nav.text; }
   $("updated").textContent = `Updated ${D.updated} · $${D.bankroll.toLocaleString()} bankroll`;
 
   // ---- this slate
