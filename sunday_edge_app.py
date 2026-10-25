@@ -5059,7 +5059,8 @@ def render_home(sched):
             st.caption("Win rate by star level against the 52.4% you need at -110.")
 
 
-tab_home, tab_slate, tab_game, tab_tracker = st.tabs(["Home", "Slate", "Game", "Tracker"])
+tab_home, tab_slate, tab_picks, tab_game, tab_tracker = st.tabs(
+    ["Home", "Slate", "Picks", "Game", "Tracker"])
 
 with tab_home:
     try:
@@ -5378,6 +5379,251 @@ with tab_slate:
                 use_container_width=True):
             tr, n = freeze(_bets, load_tracker())
             st.success(f"Froze {n} new bets." if n else "Nothing new to freeze.")
+
+# ======================================================================
+# Picks: the selector (selector.py). Sharp-weighted consensus is the fair
+# line; only ACTIVE sources (wind, your overrides) move it; every book's
+# number is priced against it. See selector.py for the reasoning.
+# ======================================================================
+def _odds_key():
+    try:
+        for _n in ("odds_api_key", "ODDS_API_KEY", "oddsApiKey",
+                   "odds_api", "ODDS_API"):
+            if _n in st.secrets:
+                return str(st.secrets[_n]).strip() or None
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 10)
+def selector_rows(regions, _bust=0):
+    """Raw offers in log_lines.py's row format. us+eu adds Pinnacle, the
+    sharpest book in the feed, at twice the credits of us alone."""
+    import log_lines
+    key = _odds_key()
+    if not key:
+        return pd.DataFrame(), "no odds_api_key in secrets"
+    try:
+        r = requests.get(
+            "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds",
+            params={"apiKey": key, "regions": regions,
+                    "markets": "spreads,totals,h2h", "oddsFormat": "american"},
+            timeout=20)
+        if r.status_code != 200:
+            return pd.DataFrame(), f"HTTP {r.status_code}: {r.text[:160]}"
+        snap = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = [x for ev in r.json() for x in log_lines._rows(ev, snap)]
+        return pd.DataFrame(rows), None
+    except Exception as e:
+        return pd.DataFrame(), str(e)
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def combined_week(season, week):
+    """nfl_combined's per-game predictions (result vs line) and reasons."""
+    try:
+        import nfl_combined
+        return nfl_combined.predict_week(int(season), int(week)), None
+    except Exception as e:
+        return pd.DataFrame(), str(e)[:200]
+
+
+def current_week(sched):
+    """Earliest week of the latest season that still has unplayed games."""
+    s = int(sched["season"].max())
+    left = sched[(sched["season"] == s) & sched["home_score"].isna()]
+    return s, (int(left["week"].min()) if len(left) else None)
+
+
+@st.cache_resource(show_spinner=False)
+def selector_models():
+    """Result distributions need many seasons (the app's schedule holds
+    four), so read the full nflverse games file, falling back to that."""
+    import selector as _sel
+    try:
+        from nfl_data import load_games
+        return _sel.build_outcome_models(load_games())
+    except Exception:
+        return _sel.build_outcome_models(sched_all)
+
+
+with tab_picks:
+    import selector as _sel
+    if st.button("Get bets", type="primary", use_container_width=True,
+                 key="sel_go"):
+        st.session_state["sel_ran"] = True
+    st.caption(
+        "Finds books whose line is off the sharp market (Pinnacle and the "
+        "offshore books move first on news; the big US books lag), adds the "
+        "measured wind effect on totals, and sizes each bet. No input "
+        "needed.")
+
+    with st.expander("Settings (optional)"):
+        _c1, _c2, _c3 = st.columns(3)
+        _regions = _c1.selectbox("Books", ["us", "us,eu"], index=1,
+                                 help="us,eu adds Pinnacle (2x credits)")
+        _min_ev = _c2.number_input("Min EV %", 0.0, 20.0, 2.0, 0.5) / 100.0
+        _bank = _c3.number_input("Bankroll", 0.0, 1e7, 1000.0, 100.0)
+        _use_wind = st.toggle("Apply wind to totals", value=True)
+        _book_opts = ["draftkings", "fanduel", "betmgm", "williamhill_us",
+                      "espnbet", "betrivers", "fanatics", "hardrockbet",
+                      "ballybet", "betonlineag", "bovada", "mybookieag",
+                      "lowvig", "betus"]
+        # Remembered across visits via secrets: my_books = "draftkings,fanduel"
+        try:
+            _saved = [b.strip() for b in
+                      str(st.secrets.get("my_books", "")).split(",")
+                      if b.strip() in _book_opts]
+        except Exception:
+            _saved = []
+        _mine = st.multiselect(
+            "Books you can bet at (empty = all)", _book_opts, default=_saved,
+            help="Every book still informs the fair line; only these are "
+                 "searched for bets.")
+        if "sel_overrides" not in st.session_state:
+            st.session_state["sel_overrides"] = pd.DataFrame({
+                "home_team": pd.Series(dtype="object"),
+                "market": pd.Series(dtype="object"),
+                "points": pd.Series(dtype="float"),
+                "note": pd.Series(dtype="object")})
+        st.caption("Manual overrides: points move the fair HOME margin "
+                   "(spreads) or the fair total. Leave empty to let the "
+                   "app decide.")
+        _ov = st.data_editor(
+            st.session_state["sel_overrides"], num_rows="dynamic",
+            use_container_width=True, key="sel_ov_editor",
+            column_config={
+                "home_team": st.column_config.SelectboxColumn(
+                    "Home team", options=sorted(ODDS_TEAM.keys())),
+                "market": st.column_config.SelectboxColumn(
+                    "Market", options=["spreads", "totals"]),
+                "points": st.column_config.NumberColumn("Points", step=0.5),
+                "note": st.column_config.TextColumn("Why"),
+            })
+
+    if st.session_state.get("sel_ran"):
+        _rows, _err = selector_rows(_regions)
+        if _err:
+            st.warning(f"Odds feed: {_err}")
+        elif _rows.empty:
+            st.info("No NFL games in the feed right now.")
+        else:
+            _mm, _tm = selector_models()
+            _fair = _sel.consensus(_rows, _mm, _tm)
+            _adj = []
+            for _r in _ov.dropna(subset=["home_team", "market",
+                                         "points"]).itertuples():
+                _adj.append(_sel.Adjustment(_r.home_team, _r.market,
+                                            float(_r.points), "override",
+                                            str(_r.note or "")))
+            # The combined model: ratings, QB changes, injuries, rest,
+            # division, late season, each weighted by what it has been
+            # worth against the closing line in walk-forward backtests.
+            _s, _w = current_week(sched_all)
+            if _w is not None:
+                import nfl_combined as _nc
+                _cw, _cerr = combined_week(_s, _w)
+                if _cerr:
+                    st.caption(f"Combined model unavailable: {_cerr}")
+                _full = {v: k for k, v in ODDS_TEAM.items()}
+                for _r in _cw.itertuples():
+                    _hn = _full.get(_r.home) or _full.get(ODDS_ALT.get(_r.home))
+                    if not _hn:
+                        continue
+                    if abs(_r.adj_spread) >= 0.05:
+                        _adj.append(_sel.Adjustment(
+                            _hn, "spreads", float(_r.adj_spread), "combined",
+                            _nc.explain(_r.why_spread, _r.x, _r.home, _r.away,
+                                        "spreads")))
+                    if abs(_r.adj_total) >= 0.05:
+                        _adj.append(_sel.Adjustment(
+                            _hn, "totals", float(_r.adj_total), "combined",
+                            _nc.explain(_r.why_total, _r.x, _r.home, _r.away,
+                                        "totals")))
+            if _use_wind:
+                for _f in _fair.values():
+                    _h = ODDS_TEAM.get(_f.home_team)
+                    # fetch_wind matches against Eastern local hours.
+                    _k = pd.to_datetime(_f.commence, utc=True, errors="coerce")
+                    _k = (None if pd.isna(_k) else _k.tz_convert(
+                        "America/New_York").tz_localize(None).isoformat())
+                    _mph = fetch_wind(_h, _k) if (_h and _k) else None
+                    _pts = wind_adjustment(_mph)
+                    if _pts:
+                        _adj.append(_sel.Adjustment(
+                            _f.home_team, "totals", _pts, "wind",
+                            f"{_mph:.0f} mph wind is forecast, which "
+                            f"keeps scoring down ({abs(_pts):.1f} pts)."))
+            _sel.apply_adjustments(_fair, _adj)
+            _pol = _sel.Policy(min_ev=_min_ev)
+            _priced = _sel.price_offers(_rows, _fair, _mm, _tm, _pol)
+            _bettable = (_priced[_priced["book"].isin(_mine)] if _mine
+                         else _priced)
+            _picks = _sel.select(_bettable, _bank, _pol)
+
+            _fl = pd.DataFrame([{
+                "game": f"{f.away_team} @ {f.home_team}",
+                "fair home margin": round(f.market_margin, 2),
+                "fair total": round(f.market_total, 2),
+                "adjusted margin": round(f.margin, 2),
+                "adjusted total": round(f.total, 2),
+                "adjustments": "; ".join(
+                    f"{a.source}{'' if a.active else ' (info)'} "
+                    f"{a.points:+.1f} {a.market}"
+                    + (f" \u2014 {a.note}" if a.note else "")
+                    for a in f.adjustments)}
+                for f in _fair.values()])
+            st.markdown("**Bets**")
+            if _picks.empty:
+                st.info("Nothing clears the threshold. That is the usual "
+                        "answer against a sharp consensus, and the right one.")
+            else:
+                for _p in _picks.itertuples():
+                    _pt = "" if pd.isna(_p.point) else (
+                        f" {_p.point:+g}" if _p.market == "spreads"
+                        else f" {_p.point:g}")
+                    _what = " ML" if _p.market == "h2h" else ""
+                    _src = str(_p.sources).split(",")
+                    _why = []
+                    if "market" in _src:
+                        if _p.market == "totals":
+                            _fv = f"put the total at {_p.fair_market:.1f}"
+                        else:
+                            _fav = (_p.home if _p.fair_market >= 0
+                                    else _p.away)
+                            _fv = (f"make {_fav} a {abs(_p.fair_market):.1f}-point "
+                                   f"favourite")
+                        _why.append(f"{_p.book} hasn't caught up with the "
+                                    f"sharp books, which {_fv}.")
+                    if _p.notes:
+                        _why.append(_p.notes)
+                    if "override" in _src:
+                        _why.append("Your override applies.")
+                    st.markdown(
+                        f"**{_p.pick}{_pt}{_what} ({int(_p.price):+d})** at "
+                        f"**{_p.book}** \u2014 stake **${_p.stake:,.2f}** "
+                        f"\u00b7 {_p.away} @ {_p.home} \u00b7 win chance "
+                        f"{_p.p_win / max(1e-9, 1 - _p.p_push) * 100:.1f}%"
+                        f"\n\n{' '.join(_why)}")
+                _show = _picks.assign(
+                    game=_picks["away"] + " @ " + _picks["home"],
+                    p_win=(_picks["p_win"] * 100).round(1),
+                    ev=(_picks["ev"] * 100).round(1),
+                    fair=_picks["fair"].round(2))
+                with st.expander("Details"):
+                    st.dataframe(
+                        _show[["game", "market", "pick", "point", "price",
+                               "book", "fair", "p_win", "ev", "stake",
+                               "sources", "notes"]],
+                        use_container_width=True, hide_index=True)
+                st.caption("p_win and EV in %. Stake is quarter-Kelly, capped "
+                           "at 2% per bet and 10% per slate.")
+            with st.expander("Fair lines"):
+                st.dataframe(_fl, use_container_width=True, hide_index=True)
+            with st.expander("Every offer, priced"):
+                st.dataframe(_priced.sort_values("ev", ascending=False),
+                             use_container_width=True, hide_index=True)
 
 with tab_game:
     gs = sorted(sched_all["season"].unique())

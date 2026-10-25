@@ -1,0 +1,30 @@
+{
+  "spread": {
+    "model_gap": -0.0064,
+    "rest_diff": 0.0094,
+    "h_bye": -0.46275,
+    "a_bye": 0.00603,
+    "h_qbchg": -0.23292,
+    "a_qbchg": 0.15354,
+    "div": -0.36089,
+    "late": 0.60438,
+    "inj_off": -0.13822,
+    "inj_def": -0.16994
+  },
+  "total": {
+    "model_gap_t": -0.01598,
+    "wind": -0.08473,
+    "cold": -0.4304,
+    "short": 0.22623,
+    "div": -0.30094,
+    "late": 0.43063,
+    "qbchg_any": -0.47652,
+    "inj_off_sum": 0.17593,
+    "inj_def_sum": 0.344
+  },
+  "k_margin": 1.2675120958376087,
+  "total_a": 48.40835928217638,
+  "total_b": 48.43149784365416,
+  "through_season": 2026,
+  "n_games": 3389
+}
