@@ -34,14 +34,14 @@ def load(path: str) -> list[dict]:
 def merge(history: list[dict], picks: list[dict], now: datetime,
           run: str) -> list[dict]:
     """A bet a later run no longer suggests before kickoff (the line moved
-    or a book caught up) is marked pulled: it stays listed but is not
-    graded or counted. It comes back if a run suggests it again."""
-    out = {_key(b): b for b in history}
+    or a book caught up) is dropped: only bets still on the board at the
+    last run before the game are kept and graded. Old files may hold
+    bets marked pulled; those are dropped too."""
     current = {_key(p) for p in picks}
-    for k, b in out.items():
-        if (k not in current
-                and pd.Timestamp(b["commence"]) > pd.Timestamp(now)):
-            b["pulled"] = True
+    out = {_key(b): b for b in history
+           if not b.get("pulled")
+           and (_key(b) in current
+                or pd.Timestamp(b["commence"]) <= pd.Timestamp(now))}
     for p in picks:
         k = _key(p)
         old = out.get(k)

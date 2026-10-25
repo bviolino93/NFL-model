@@ -57,7 +57,7 @@ BOOK_WEIGHT = {
 # "combined" is nfl_combined's prediction of the result vs the line, whose
 # weights are fitted walk-forward and shrunk hard toward zero, so it only
 # moves the line by what history says each factor is worth.
-ACTIVE_SOURCES = {"override", "wind", "combined"}
+ACTIVE_SOURCES = {"override", "wind", "combined", "ratings"}
 
 
 # ----------------------------------------------------------------------
@@ -86,13 +86,16 @@ def devig(p_a: float, p_b: float) -> tuple[float, float]:
 class OutcomeModel:
     """
     P(result > line), P(result == line) for a fair centre `mu`, from
-    historical games whose closing number was near `mu`. The results are NOT
-    shifted, so the integer structure (3s and 7s for margins) survives.
-    The window widens until it holds `min_games`.
+    historical games whose closing number was near `mu`. Each game's result
+    is moved by a whole number (mu minus its own line, rounded), so the
+    integer structure (3s and 7s for margins) survives. The window widens
+    until it holds `min_games`; 1,000 keeps the probabilities smooth in mu
+    (300 left ~3% jumps between neighbouring centres, enough to show fake
+    edges once an adjustment nudged the centre).
     """
 
     def __init__(self, centres: np.ndarray, results: np.ndarray,
-                 min_games: int = 300):
+                 min_games: int = 1000):
         o = np.argsort(centres)
         self.c = np.asarray(centres, float)[o]
         self.r = np.asarray(results, float)[o]
@@ -110,11 +113,7 @@ class OutcomeModel:
             if hi - lo >= self.min_games or w > 20:
                 break
             w += 0.5
-        s = self.r[lo:hi]
-        # Re-centre only the part the window's own spread introduces, by an
-        # integer, so key numbers stay where they belong.
-        shift = round(key - float(self.c[lo:hi].mean()))
-        s = s + shift
+        s = self.r[lo:hi] + np.round(key - self.c[lo:hi])
         self._cache[key] = s
         return s
 

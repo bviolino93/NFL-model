@@ -23,6 +23,7 @@ import json
 import os
 from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -155,6 +156,13 @@ US_BOOKS = ["draftkings", "fanduel", "betmgm", "williamhill_us", "espnbet",
 # up out of sample (55%) and its spread picks did not (50%). Spread factors
 # are still computed and logged, as INFO, so they can earn their way back.
 COMBINED_MARKETS = {"totals"}
+# Spreads: the ratings-plus-injuries margin (paper.model_margins) moves the
+# fair line by this share of its gap to the market. Brian's call
+# (2026-10-25) to bet these; the opener backtest has them near break-even
+# (52-54% at a 3+ point gap); a fifth of the gap, capped at a point,
+# keeps the stated win chances in that range instead of trusting the gap.
+RATINGS_SPREAD_WEIGHT = 0.2
+RATINGS_SPREAD_CAP = 1.0      # points; keeps win chances near the backtest
 
 
 def explain_pick(p, ctx: dict) -> str:
@@ -169,6 +177,18 @@ def explain_pick(p, ctx: dict) -> str:
         why.append(f"{BOOK_NAME.get(p.book, p.book)} hasn't caught up with "
                    f"the sharp books, which {fv}.")
     c = ctx.get(p.home, {})
+    m = c.get("ratings")
+    side = 1 if p.pick == p.home else -1
+    if p.market == "spreads" and "ratings" in str(p.sources) and m and \
+            side * (m["margin"] - p.fair_market) > 0:
+        mine = p.home if m["margin"] >= 0 else p.away
+        mkt = p.home if p.fair_market >= 0 else p.away
+        inj = m["injuries"]
+        hurt = (f" Injuries account for {abs(inj):.1f} pts of that."
+                if abs(inj) >= 0.5 and side * inj > 0 else "")
+        why.append(f"Team ratings have {mine} by {abs(m['margin']):.1f}; "
+                   f"the sharp books have {mkt} by "
+                   f"{abs(p.fair_market):.1f}.{hurt}")
     if p.market == "totals":
         toward = -1 if str(p.pick).lower() == "under" else 1
         if "combined" in str(p.sources) and "why_total" in c:
@@ -236,6 +256,21 @@ def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
                     src = "combined" if mkt in COMBINED_MARKETS else \
                         "combined_info"
                     adj.append(sel.Adjustment(hn, mkt, float(v), src))
+    try:
+        mine = paper.model_margins(fair, ODDS_TEAM)
+    except Exception as e:
+        print(f"ratings unavailable: {e}")
+        mine = {}
+    for k, m in mine.items():
+        f = fair[k]
+        if np.isnan(f.market_margin):
+            continue
+        pts = float(np.clip(RATINGS_SPREAD_WEIGHT
+                            * (m["margin"] - f.market_margin),
+                            -RATINGS_SPREAD_CAP, RATINGS_SPREAD_CAP))
+        if abs(pts) >= 0.05:
+            ctx.setdefault(f.home_team, {})["ratings"] = m
+            adj.append(sel.Adjustment(f.home_team, "spreads", pts, "ratings"))
     if use_wind:
         for f in fair.values():
             mph = wind_fn(ODDS_TEAM.get(f.home_team), f.commence)
