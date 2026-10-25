@@ -54,7 +54,10 @@ BOOK_WEIGHT = {
 }
 
 # Sources that move picks. Everything else is INFO until it proves itself.
-ACTIVE_SOURCES = {"override", "wind"}
+# "combined" is nfl_combined's prediction of the result vs the line, whose
+# weights are fitted walk-forward and shrunk hard toward zero, so it only
+# moves the line by what history says each factor is worth.
+ACTIVE_SOURCES = {"override", "wind", "combined"}
 
 
 # ----------------------------------------------------------------------
@@ -272,6 +275,27 @@ class Policy:
     min_books: int = 3            # need a real consensus to price against
 
 
+def _win_push(r, f, margin, total, margin_model, total_model):
+    """(P(win), P(push), centre) for one offer at the given fair centre."""
+    if r.market == "spreads" and math.isfinite(margin):
+        # Stated from the home margin: home -3 covers above 3, away +3
+        # covers below 3.
+        home = r.outcome == f.home_team
+        line = -float(r.point) if home else float(r.point)
+        pw, pp = margin_model.probs(margin, line)
+        return (pw if home else 1.0 - pw - pp), pp, margin
+    if r.market == "totals" and math.isfinite(total):
+        pw, pp = total_model.probs(total, float(r.point))
+        over = str(r.outcome).lower() != "under"
+        return (pw if over else 1.0 - pw - pp), pp, total
+    if r.market == "h2h" and math.isfinite(margin):
+        p_home, p_tie = margin_model.probs(margin, 0.0)
+        # Ties are rare; most books grade them as a push.
+        pw = p_home if r.outcome == f.home_team else 1 - p_home - p_tie
+        return pw, p_tie, margin
+    return None
+
+
 def price_offers(snap: pd.DataFrame, fair: dict, margin_model, total_model,
                  policy: Policy | None = None) -> pd.DataFrame:
     """Every offer priced against the adjusted fair line."""
@@ -282,42 +306,31 @@ def price_offers(snap: pd.DataFrame, fair: dict, margin_model, total_model,
         f = fair.get(r.event_id)
         if f is None or nbooks.get(r.event_id, 0) < policy.min_books:
             continue
-        if r.market == "spreads" and math.isfinite(f.margin):
-            # Stated from the home margin: home -3 covers above 3, away +3
-            # covers below 3.
-            home = r.outcome == f.home_team
-            line = -float(r.point) if home else float(r.point)
-            pw, pp = margin_model.probs(f.margin, line)
-            if not home:
-                pw = 1.0 - pw - pp
-            src_fair = f.margin
-        elif r.market == "totals" and math.isfinite(f.total):
-            pw, pp = total_model.probs(f.total, float(r.point))
-            if str(r.outcome).lower() == "under":
-                pw = 1.0 - pw - pp
-            src_fair = f.total
-        elif r.market == "h2h" and math.isfinite(f.margin):
-            p_home, p_tie = margin_model.probs(f.margin, 0.0)
-            # A tie is rare; split it, as most books grade it as a push.
-            pw = p_home if r.outcome == f.home_team else 1 - p_home - p_tie
-            pp = p_tie
-            src_fair = f.margin
-        else:
+        adj = _win_push(r, f, f.margin, f.total, margin_model, total_model)
+        if adj is None:
             continue
+        pw, pp, src_fair = adj
         b = payout(r.price)
         ev = pw * b - (1.0 - pw - pp)
+        # The same offer at the UNADJUSTED market line: positive means the
+        # book itself is off the sharp consensus, whatever the factors say.
+        mk = _win_push(r, f, f.market_margin, f.market_total, margin_model,
+                       total_model)
+        ev_mkt = mk[0] * b - (1.0 - mk[0] - mk[1]) if mk else float("nan")
         moved = [a for a in f.adjustments if a.active and
                  (a.market == r.market or
                   (r.market == "h2h" and a.market == "spreads"))]
+        srcs = sorted({a.source for a in moved})
+        if not srcs or ev_mkt > 0:
+            srcs = ["market"] + srcs
         rows.append({
             "event_id": r.event_id, "home": f.home_team, "away": f.away_team,
             "commence": f.commence, "market": r.market, "pick": r.outcome,
             "point": r.point, "price": r.price, "book": r.book,
             "fair": src_fair, "p_win": pw, "p_push": pp, "ev": ev,
-            "kelly": kelly(pw, pp, r.price),
-            "sources": ",".join(sorted({a.source for a in moved})) or "market",
-            "notes": "; ".join(a.note for a in f.adjustments if a.note
-                               and a.market in (r.market, "spreads")),
+            "ev_market": ev_mkt, "kelly": kelly(pw, pp, r.price),
+            "sources": ",".join(srcs),
+            "notes": "; ".join(a.note for a in moved if a.note),
         })
     return pd.DataFrame(rows)
 

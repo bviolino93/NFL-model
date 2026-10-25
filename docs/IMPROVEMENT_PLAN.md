@@ -66,3 +66,19 @@ What the sweep did teach:
 Beating naive averages is necessary but not enough, because books beat them too. The real test is against prop lines, and there's no free history of those. `log_lines.py` plus `.github/workflows/log_lines.yml` snapshot game lines and props from The Odds API every Tuesday and Sunday into `data/lines/`. That builds the props test set and an opener-vs-close history for game-line CLV at the same time, at roughly 400 credits a month.
 
 `python nfl_props.py --week N` prints this week's projections, with mean and median, for unplayed games. It does not yet know about inactives, so check the injury report.
+
+## Update: the combined "everything" model
+
+`nfl_combined.py` takes the closing line as the baseline and predicts how far the result lands from it. Its inputs are the EPA ratings, QB changes, injury loads, rest and byes, division games, late season, and wind and cold for totals. Weights come from a ridge fit on prior seasons only, shrunk hard toward zero. Win chances come from the empirical result distribution around (line + prediction).
+
+Betting the favoured side at -110 when its win chance clears 52%:
+
+| | 2016-2021 | 2022-2026 (held out) |
+|---|---|---|
+| Totals | 431-354 (54.9%) | 345-281 (55.1%) |
+| Totals, weather removed | 54.9% | 54.4% |
+| Spreads | 514-462 (52.7%) | 331-327 (50.3%) |
+
+The totals edge holds in both periods, and still holds with weather taken out. It comes mostly from QB changes (unders) and defensive injuries (overs). Combined that's z ≈ 1.95, so it's promising but not proven. Spreads don't hold up. The ratings themselves get roughly zero weight, which matches the earlier result.
+
+**Live use.** `python nfl_combined.py --export` writes `combined_model.json` (re-run it weekly or monthly). The Picks tab's **Get bets** applies `predict_week()` as the `combined` source, wind through the app's own forecast rule (so it isn't counted twice), and shows a win chance and reasons on every bet.

@@ -5419,6 +5419,23 @@ def selector_rows(regions, _bust=0):
         return pd.DataFrame(), str(e)
 
 
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def combined_week(season, week):
+    """nfl_combined's per-game predictions (result vs line) and reasons."""
+    try:
+        import nfl_combined
+        return nfl_combined.predict_week(int(season), int(week)), None
+    except Exception as e:
+        return pd.DataFrame(), str(e)[:200]
+
+
+def current_week(sched):
+    """Earliest week of the latest season that still has unplayed games."""
+    s = int(sched["season"].max())
+    left = sched[(sched["season"] == s) & sched["home_score"].isna()]
+    return s, (int(left["week"].min()) if len(left) else None)
+
+
 @st.cache_resource(show_spinner=False)
 def selector_models():
     """Result distributions need many seasons (the app's schedule holds
@@ -5492,6 +5509,28 @@ with tab_picks:
                 _adj.append(_sel.Adjustment(_r.home_team, _r.market,
                                             float(_r.points), "override",
                                             str(_r.note or "")))
+            # The combined model: ratings, QB changes, injuries, rest,
+            # division, late season, each weighted by what it has been
+            # worth against the closing line in walk-forward backtests.
+            _s, _w = current_week(sched_all)
+            if _w is not None:
+                import nfl_combined as _nc
+                _cw, _cerr = combined_week(_s, _w)
+                if _cerr:
+                    st.caption(f"Combined model unavailable: {_cerr}")
+                _full = {v: k for k, v in ODDS_TEAM.items()}
+                for _r in _cw.itertuples():
+                    _hn = _full.get(_r.home) or _full.get(ODDS_ALT.get(_r.home))
+                    if not _hn:
+                        continue
+                    if abs(_r.adj_spread) >= 0.05:
+                        _adj.append(_sel.Adjustment(
+                            _hn, "spreads", float(_r.adj_spread), "combined",
+                            _nc.reasons(_r.why_spread)))
+                    if abs(_r.adj_total) >= 0.05:
+                        _adj.append(_sel.Adjustment(
+                            _hn, "totals", float(_r.adj_total), "combined",
+                            _nc.reasons(_r.why_total)))
             if _use_wind:
                 for _f in _fair.values():
                     _h = ODDS_TEAM.get(_f.home_team)
@@ -5535,14 +5574,16 @@ with tab_picks:
                         else f" {_p.point:g}")
                     _what = " ML" if _p.market == "h2h" else ""
                     _why = {"market": "this book is off the sharp market",
-                            "wind": "wind", "override": "your override"}
+                            "wind": "wind", "override": "your override",
+                            "combined": "matchup factors"}
                     _why = ", ".join(_why.get(x, x)
                                      for x in str(_p.sources).split(","))
                     st.markdown(
                         f"**{_p.pick}{_pt}{_what} ({int(_p.price):+d})** at "
                         f"**{_p.book}** \u2014 stake **${_p.stake:,.2f}** "
-                        f"\u00b7 {_p.away} @ {_p.home} \u00b7 EV "
-                        f"{_p.ev * 100:.1f}% \u00b7 why: {_why}"
+                        f"\u00b7 {_p.away} @ {_p.home} \u00b7 win chance "
+                        f"{_p.p_win / max(1e-9, 1 - _p.p_push) * 100:.1f}% "
+                        f"\u00b7 EV {_p.ev * 100:.1f}% \u00b7 why: {_why}"
                         + (f" ({_p.notes})" if _p.notes else ""))
                 _show = _picks.assign(
                     game=_picks["away"] + " @ " + _picks["home"],
