@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from backtest import calibrate, home_field_before, project
-from nfl_data import fix_starters, load_games, load_team_games
+from nfl_data import fix_starters, load_games, load_rosters, load_team_games
 from nfl_power import PLAYS_PER_GAME, PowerConfig, fit_power
 
 GAP = 3.0
@@ -116,6 +116,13 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
         return [{"name": x.name, "pos": x.pos, "status": x.status,
                  "pts": round(float(x.pts), 1)} for x in r.head(6).itertuples()]
 
+    try:
+        ro = load_rosters(season).sort_values("week")
+        status = ro.drop_duplicates("full_name", keep="last").set_index(
+            "full_name")["status"].to_dict()
+    except Exception:
+        status = {}
+
     cfg = PowerConfig()
     fits = {}
     out = {}
@@ -136,8 +143,33 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
             row.update(breakdown(fits[r.season, r.week], g, r, cfg))
         except Exception as exc:
             print(f"no breakdown for {r.game_id}: {exc}")
+        g = games[games.game_id == r.game_id].iloc[0]
+        for side in ("home", "away"):
+            swap = qb_swap(games, status, r.season, getattr(r, side),
+                           g[f"{side}_qb_name"])
+            if swap:
+                row["injured"][side].insert(0, swap)
         out[want[r.game_id]] = row
     return out
+
+
+def qb_swap(games, status: dict, season, team, starter) -> dict | None:
+    """The team's regular QB (most starts this season) when someone else is
+    projected to start, as an injury-list entry. The QB change itself is
+    priced through the ratings' QB term, so it carries no points here."""
+    played = games[(games.season == season) & games.margin.notna()]
+    names = pd.concat([played.loc[played.home_team == team, "home_qb_name"],
+                       played.loc[played.away_team == team, "away_qb_name"]]
+                      ).dropna()
+    if names.empty or not isinstance(starter, str):
+        return None
+    regular = names.value_counts().index[0]
+    if regular == starter:
+        return None
+    st = status.get(regular)
+    return {"name": regular, "pos": "QB",
+            "status": "IR" if st == "RES" else "Out" if st != "ACT" else "Benched",
+            "pts": None, "note": f"{starter.split()[-1]} starting"}
 
 
 def breakdown(pr, g, r, cfg: PowerConfig) -> dict:

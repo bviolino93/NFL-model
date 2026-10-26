@@ -55,3 +55,17 @@ def test_fix_starters_replaces_qb_on_ir(monkeypatch):
     out = nfl_data.fix_starters(games)
     assert out.loc[2, "away_qb_id"] == "mckee"
     assert out.loc[2, "home_qb_id"] == "was1"
+
+
+def test_qb_swap_names_the_regular_starter_when_someone_else_starts():
+    import pandas as pd
+    import paper
+    g = pd.DataFrame({
+        "season": [2026] * 3, "margin": [3, -7, None],
+        "home_team": ["PHI", "NYG", "PHI"], "away_team": ["DAL", "PHI", "DAL"],
+        "home_qb_name": ["Jalen Hurts", "X", "Tanner McKee"],
+        "away_qb_name": ["Dak Prescott", "Jalen Hurts", "Dak Prescott"]})
+    s = paper.qb_swap(g, {"Jalen Hurts": "RES"}, 2026, "PHI", "Tanner McKee")
+    assert s == {"name": "Jalen Hurts", "pos": "QB", "status": "IR",
+                 "pts": None, "note": "McKee starting"}
+    assert paper.qb_swap(g, {}, 2026, "DAL", "Dak Prescott") is None
