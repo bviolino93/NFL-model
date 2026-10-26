@@ -91,14 +91,30 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
     try:
         from nfl_combined import injury_loads
         L = injury_loads([season], include_ir=True).sort_values("week")
+        P = injury_loads([season], include_ir=True, players=True)
     except Exception as exc:
         print(f"injuries unavailable: {exc}")
         L = pd.DataFrame(columns=["season", "week", "team", "off", "def"])
+        P = pd.DataFrame(columns=["week", "team", "name", "pos", "status",
+                                  "side", "load"])
 
     def load_for(team, week):
         r = L[(L.team == team) & (L.week <= week)]
         return (0.0, 0.0) if r.empty else (float(r.off.iloc[-1]),
                                            float(r["def"].iloc[-1]))
+
+    def players_for(team, week):
+        """The players behind a team's injury load, biggest first, each with
+        the points the model takes off for him."""
+        r = P[(P.team == team) & (P.week <= week)]
+        if r.empty:
+            return []
+        r = r[r.week == r.week.max()]
+        pts = np.where(r.side == "off", INJ_OFF_PTS, INJ_DEF_PTS) * r.load
+        r = r.assign(pts=pts)
+        r = r[r.pts.abs() >= 0.1].sort_values("pts")
+        return [{"name": x.name, "pos": x.pos, "status": x.status,
+                 "pts": round(float(x.pts), 1)} for x in r.head(6).itertuples()]
 
     cfg = PowerConfig()
     fits = {}
@@ -108,7 +124,9 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
         ao, ad = load_for(r.away, r.week)
         inj = INJ_OFF_PTS * (ho - ao) + INJ_DEF_PTS * (hd - ad)
         row = {"ratings": float(r.model_margin), "injuries": float(inj),
-               "margin": float(r.model_margin + inj)}
+               "margin": float(r.model_margin + inj),
+               "injured": {"home": players_for(r.home, r.week),
+                           "away": players_for(r.away, r.week)}}
         try:
             if (r.season, r.week) not in fits:
                 fits[r.season, r.week] = fit_power(

@@ -66,7 +66,7 @@ def _nk(s):
 
 
 def injury_loads(seasons, cache_dir: str = CACHE_DIR,
-                 include_ir: bool = False) -> pd.DataFrame:
+                 include_ir: bool = False, players: bool = False) -> pd.DataFrame:
     """
     Per (season, week, team): sum over listed non-QB players of
     P(miss) x recent snap share, split offense/defense. Snap share is the
@@ -105,8 +105,11 @@ def injury_loads(seasons, cache_dir: str = CACHE_DIR,
     inj["p"] = inj["report_status"].map(
         {"Out": 1.0, "Doubtful": 0.9, "Questionable": 0.25}).fillna(0.0)
     inj = inj[(inj["p"] > 0) & (inj["position"] != "QB")]
+    inj = inj.assign(name=inj["full_name"], pos=inj["position"],
+                     status=inj["report_status"])
+    cols = ["season", "week", "team", "k", "p", "name", "pos", "status"]
     if include_ir:
-        keep = [inj[["season", "week", "team", "k", "p"]]]
+        keep = [inj[cols]]
         for y in seasons:
             try:
                 r = load_rosters(y, cache_dir)
@@ -120,7 +123,8 @@ def injury_loads(seasons, cache_dir: str = CACHE_DIR,
                            .assign(week=r["week"].max() + 1)])
             keep.append(pd.DataFrame({
                 "season": r["season"], "week": r["week"], "team": r["team"],
-                "k": r["full_name"].map(_nk), "p": 1.0}))
+                "k": r["full_name"].map(_nk), "p": 1.0,
+                "name": r["full_name"], "pos": r["position"], "status": "IR"}))
         inj = (pd.concat(keep, ignore_index=True).sort_values("p")
                .drop_duplicates(["season", "week", "team", "k"], keep="last"))
 
@@ -140,8 +144,10 @@ def injury_loads(seasons, cache_dir: str = CACHE_DIR,
                 rows.append((s, w, t, k, v, side[k]))
     imp = pd.DataFrame(rows, columns=["season", "week", "team", "k", "imp",
                                       "side"])
-    m = inj.merge(imp, on=["season", "week", "team", "k"])
+    m = inj[cols].merge(imp, on=["season", "week", "team", "k"])
     m["load"] = m["p"] * m["imp"]
+    if players:
+        return m.drop(columns="k")
     out = (m.pivot_table(index=["season", "week", "team"], columns="side",
                          values="load", aggfunc="sum").fillna(0.0)
            .reset_index())
