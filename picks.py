@@ -224,7 +224,9 @@ def explain_spread(p, m: dict) -> str:
     against = []
     if "pass_off" in m:
         qb_opp = _last(m["away_qb"] if side > 0 else m["home_qb"])
-        cons = {"qb": f"{qb_opp} at quarterback" if qb_opp else "quarterback",
+        qb_me = _last(m["home_qb"] if side > 0 else m["away_qb"])
+        cons = {"qb": (f"{qb_opp} over {qb_me} at quarterback" if qb_opp and qb_me
+                       else f"{qb_opp} at quarterback" if qb_opp else "quarterback"),
                 "pass_off": "passing game", "run_off": "running game",
                 "pass_def": "pass defense", "run_def": "run defense",
                 "hfa": "home field"}
@@ -243,13 +245,14 @@ def explain_spread(p, m: dict) -> str:
 
 def injuries_for(p, ctx: dict) -> list[dict]:
     """The injured players the model counts in this game (paper.model_margins),
-    each with his team and the points it takes off. The totals model only
-    uses the weekly injury report, so players on IR are left out there."""
+    each with his team and the points it takes off (none for a QB swap,
+    which the ratings' QB term prices). The totals model only uses the
+    weekly injury report, so non-QBs on IR are left out there."""
     m = (ctx.get(p.home, {}).get("ratings") or {}).get("injured") or {}
     out = []
     for side, team in (("away", p.away), ("home", p.home)):
         for x in m.get(side, []):
-            if p.market == "totals" and x["status"] == "IR":
+            if p.market == "totals" and x["status"] == "IR" and x["pos"] != "QB":
                 continue
             out.append({"team": _nick(team), **x})
     return out
