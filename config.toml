@@ -1,5 +1,5 @@
 # Without this file Streamlit uses its default theme, whose primaryColor is
-# red — which is why the tab underline rendered red against a blue-accented
+# red — which is why the tab underline rendered red against a green-accented
 # app. CSS can override most of it, but the theme is the right place to set
 # it, and it also covers widgets whose internals change between versions.
 #
@@ -7,7 +7,7 @@
 
 [theme]
 base = "dark"
-primaryColor = "#3B82F6"
+primaryColor = "#22C38E"
 backgroundColor = "#0A1020"
 secondaryBackgroundColor = "#111A2E"
 textColor = "#E8F0FA"
