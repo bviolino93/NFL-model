@@ -1575,7 +1575,7 @@ TRACKER_COLS = [
     "kickoff_utc", "proven_share",
 ]
 
-st.set_page_config(page_title="Sunday Edge", page_icon="🏈", layout="wide")
+st.set_page_config(page_title="Fieldline NFL", page_icon="🏈", layout="wide")
 
 
 # ----------------------------------------------------------------------
@@ -4232,19 +4232,18 @@ def stat_strip(items):
     return f'<div class="se-stat-strip">{cells}</div>'
 
 
-# The big-nose guy in shades with crossed scissors; mascot.svg is the same drawing
-# for the Pages dashboard.
-MASCOT_SVG = (
-    '<svg width="46" height="46" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="Big-nose guy logo"><defs><linearGradient id="bn-skin" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f3c4a8"/><stop offset="1" stop-color="#d98f72"/></linearGradient><linearGradient id="bn-ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d8ff7a"/><stop offset="1" stop-color="#6fbf12"/></linearGradient><clipPath id="bn-in"><circle cx="84" cy="80" r="68"/></clipPath></defs><circle cx="84" cy="80" r="74" fill="#0b0f16" stroke="url(#bn-ring)" stroke-width="6"/><g clip-path="url(#bn-in)"><circle cx="84" cy="80" r="68" fill="#111823"/><path d="M84 12 L84 148 M16 80 L152 80" stroke="#1a2230" stroke-width="2"/><g stroke="#b6ff3b" stroke-width="5" stroke-linecap="round" fill="none" opacity=".9"><path d="M48 38 L128 118"/><path d="M128 38 L48 118"/><circle cx="40" cy="30" r="9"/><circle cx="136" cy="30" r="9"/></g><path d="M40 160 C44 132 62 120 82 118 L108 118 C128 121 140 138 142 160 Z" fill="#f4f6f8" stroke="#07090d" stroke-width="4"/><path d="M60 136 L124 136" stroke="#b6ff3b" stroke-width="4"/></g><g stroke="#07090d" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"><path d="M84 104 L84 120 L108 120 L108 104 Z" fill="#c98468"/><circle cx="98" cy="72" r="34" fill="url(#bn-skin)"/><g fill="#d6d9de"><circle cx="126" cy="54" r="8"/><circle cx="132" cy="66" r="8"/><circle cx="129" cy="79" r="7.5"/><circle cx="118" cy="44" r="7"/></g><path d="M74 52 C52 54 22 70 8 96 C0 112 10 128 30 124 C48 121 64 112 74 100 C82 90 84 66 74 52 Z" fill="url(#bn-skin)"/></g><path d="M22 108 C26 104 34 104 38 108" stroke="#07090d" stroke-width="3" fill="none" stroke-linecap="round"/><ellipse cx="30" cy="117" rx="6" ry="3" fill="#5a2a1e" transform="rotate(-12 30 117)"/><path d="M30 78 C40 70 52 66 62 66" stroke="#fff" stroke-opacity=".45" stroke-width="4" fill="none" stroke-linecap="round"/><path d="M74 64 L112 60 C114 70 108 76 98 76 C88 76 82 72 80 66 Z" fill="#07090d"/><path d="M86 66 L96 64" stroke="#b6ff3b" stroke-width="2.5" stroke-linecap="round"/><path d="M112 60 L128 58" stroke="#07090d" stroke-width="3.5" stroke-linecap="round"/><path d="M82 46 C92 42 104 42 112 46" stroke="#a8604a" stroke-width="2.5" fill="none" stroke-linecap="round"/><path d="M84 98 C90 101 98 100 102 95" stroke="#07090d" stroke-width="3" fill="none" stroke-linecap="round"/></svg>'
+# The Fieldline mark; logo.svg is the same mark for the Pages dashboard.
+LOGO_SVG = (
+    '<svg width="52" height="52" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Fieldline"><defs><linearGradient id="fl-g" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#3bffb0"/><stop offset="1" stop-color="#b6ff3b"/></linearGradient><linearGradient id="fl-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#161c26"/><stop offset="1" stop-color="#0b0f15"/></linearGradient></defs><rect x="1" y="1" width="62" height="62" rx="15" fill="url(#fl-b)" stroke="#2a3240" stroke-width="1.5"/><path d="M20 14 V50" stroke="#eef2f7" stroke-width="5" stroke-linecap="round"/><path d="M20 16 H46" stroke="#eef2f7" stroke-width="5" stroke-linecap="round"/><path d="M20 32 H40" stroke="#b6ff3b" stroke-width="5" stroke-linecap="round"/><path d="M30 44 V50 M38 44 V50 M46 44 V50" stroke="#3b4554" stroke-width="2.5" stroke-linecap="round"/></svg>'
 )
 
 
 def brand_header():
     st.markdown(
         '<div class="se-brand">'
-        '<div class="se-mark">' + MASCOT_SVG + '</div>'
-        '<div><h1>SUNDAY <em>EDGE</em></h1>'
-        '<div class="tag">MEASURED. NOT ASSUMED.</div></div>'
+        '<div class="se-mark" style="background:none;border:0">' + LOGO_SVG + '</div>'
+        '<div><h1>FIELDLINE <em>NFL</em></h1>'
+        '<div class="tag">FOOTBALL ANALYTICS</div></div>'
         '</div>', unsafe_allow_html=True)
 
 
@@ -4783,7 +4782,7 @@ def hm_share_text(df, day, min_stars=1):
         dl = pd.to_datetime(str(day)).strftime("%a %-m/%-d")
     except Exception:
         dl = str(day)
-    lines = [f"Sunday Edge · {dl}"]
+    lines = [f"Fieldline NFL · {dl}"]
     x = df[df["_conf"] >= min_stars].sort_values(["_kt", "_conf"], ascending=[True, False])
     last = None
     for _, r in x.iterrows():
@@ -5360,7 +5359,7 @@ with tab_slate:
                     f'<span>{f["prob"]:.0%}</span></div></div>')
 
         _h.append(
-            f'<div class="sc-foot">Sunday Edge \u00b7 '
+            f'<div class="sc-foot">Fieldline NFL \u00b7 '
             f'bets first, most confident first. The watch list is not bets. '
             f'Stars are information; stake stays flat.'
             f'</div></div>')
