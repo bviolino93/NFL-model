@@ -241,6 +241,20 @@ def explain_spread(p, m: dict) -> str:
     return " ".join(why)
 
 
+def injuries_for(p, ctx: dict) -> list[dict]:
+    """The injured players the model counts in this game (paper.model_margins),
+    each with his team and the points it takes off. The totals model only
+    uses the weekly injury report, so players on IR are left out there."""
+    m = (ctx.get(p.home, {}).get("ratings") or {}).get("injured") or {}
+    out = []
+    for side, team in (("away", p.away), ("home", p.home)):
+        for x in m.get(side, []):
+            if p.market == "totals" and x["status"] == "IR":
+                continue
+            out.append({"team": _nick(team), **x})
+    return out
+
+
 def explain_pick(p, ctx: dict) -> str:
     """Why this bet: the model's own case where it has one, else the gap
     between this book and the sharp books."""
@@ -369,6 +383,7 @@ def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
     if len(picks):
         picks["win_chance"] = picks["p_win"] / (1 - picks["p_push"])
         picks["why"] = [explain_pick(p, ctx) for p in picks.itertuples()]
+        picks["injuries"] = [injuries_for(p, ctx) for p in picks.itertuples()]
         picks["book"] = picks["book"].map(lambda b: BOOK_NAME.get(b, b))
     return picks, fair, priced
 
@@ -385,7 +400,7 @@ def render_html(picks: pd.DataFrame, fair: dict, made: str, bankroll: float,
     """The dashboard: dashboard.html with this run's data embedded, so the
     page works from GitHub Pages, the picks branch or a saved copy."""
     cols = ["away", "home", "commence", "market", "pick", "point", "price",
-            "book", "stake", "win_chance", "ev", "why"]
+            "book", "stake", "win_chance", "ev", "why", "injuries"]
     data = {
         "updated": made, "bankroll": bankroll,
         "picks": picks[cols].to_dict("records") if len(picks) else [],
@@ -475,7 +490,7 @@ def main():
     for path in (a.out, a.json, a.md, a.history):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     cols = ["away", "home", "commence", "market", "pick", "point", "price",
-            "book", "stake", "win_chance", "ev", "why"]
+            "book", "stake", "win_chance", "ev", "why", "injuries"]
     out = picks[cols].to_dict("records") if len(picks) else []
     out = json.loads(json.dumps(out, default=str))
     # Bets on later weeks are left over from before week_only; drop them.

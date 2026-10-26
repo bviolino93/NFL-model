@@ -28,3 +28,16 @@ def test_spread_reason_is_the_models_case_not_the_sharp_line():
 def test_line_shopping_bet_still_explains_the_gap():
     why = picks.explain_pick(_pick(sources="market"), {})
     assert "hasn't caught up with the sharp books" in why
+
+
+def test_injuries_for_lists_both_teams_and_skips_ir_on_totals():
+    inj = {"home": [{"name": "A", "pos": "WR", "status": "Out", "pts": -0.6},
+                    {"name": "B", "pos": "CB", "status": "IR", "pts": -0.4}],
+           "away": [{"name": "C", "pos": "LB", "status": "Doubtful", "pts": -0.5}]}
+    ctx = {"Philadelphia Eagles": {"ratings": {"injured": inj}}}
+    sp = N(home="Philadelphia Eagles", away="Dallas Cowboys", market="spreads")
+    tot = N(home="Philadelphia Eagles", away="Dallas Cowboys", market="totals")
+    assert [(x["team"], x["name"]) for x in picks.injuries_for(sp, ctx)] == [
+        ("Cowboys", "C"), ("Eagles", "A"), ("Eagles", "B")]
+    assert [x["name"] for x in picks.injuries_for(tot, ctx)] == ["C", "A"]
+    assert picks.injuries_for(sp, {}) == []
