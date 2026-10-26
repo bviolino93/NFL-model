@@ -3833,7 +3833,7 @@ CARD_CSS = """
   --bg:#0A1020; --panel:#111A2E; --panel2:#16213A;
   --line:rgba(116,151,183,.16); --line2:rgba(116,151,183,.28);
   --ink:#E8F0FA; --muted:#8CA3BE; --faint:#61748C;
-  --accent:#3B82F6; --accent2:#60A5FA;
+  --accent:#22C38E; --accent2:#4FD6A8;
   --go:#34D399; --warn:#F2C14E; --loss:#F87171;
 }
 html,body,[class*="css"],.stMarkdown,.stButton button,input,select{
@@ -3849,7 +3849,7 @@ html,body,[class*="css"],.stMarkdown,.stButton button,input,select{
 .se-mark{width:52px;height:52px;border-radius:14px;flex:0 0 auto;
   border:1px solid var(--line2);display:flex;align-items:center;
   justify-content:center;
-  background:linear-gradient(160deg,rgba(59,130,246,.22),rgba(59,130,246,.05))}
+  background:linear-gradient(160deg,rgba(34,195,142,.22),rgba(34,195,142,.05))}
 .se-mark b{font-size:1.45rem;font-weight:900;color:var(--accent2);
   line-height:1}
 .se-mark svg{display:block}
@@ -3889,8 +3889,8 @@ html,body,[class*="css"],.stMarkdown,.stButton button,input,select{
   border-top:1px solid var(--line)}
 .sc-rank{flex:0 0 22px;height:22px;border-radius:7px;display:flex;
   align-items:center;justify-content:center;font-size:.68rem;font-weight:800;
-  color:var(--accent2);background:rgba(59,130,246,.12);
-  border:1px solid rgba(59,130,246,.22)}
+  color:var(--accent2);background:rgba(34,195,142,.12);
+  border:1px solid rgba(34,195,142,.22)}
 .sc-main{flex:1 1 auto;min-width:0}
 .sc-main b{display:block;font-size:1.04rem;font-weight:800;color:var(--ink);
   letter-spacing:-.025em;white-space:nowrap;overflow:hidden;
@@ -3996,8 +3996,8 @@ input,textarea{background:var(--panel2)!important;color:var(--ink)!important}
 .stButton button{border-radius:12px!important;font-weight:800!important;
   letter-spacing:-.01em!important;border:1px solid var(--line2)!important}
 .stButton button[kind="primary"]{
-  background:linear-gradient(180deg,#3B82F6,#2563EB)!important;
-  border:0!important;box-shadow:0 12px 26px -14px rgba(59,130,246,.9)!important}
+  background:linear-gradient(180deg,#22C38E,#12A372)!important;
+  border:0!important;box-shadow:0 12px 26px -14px rgba(34,195,142,.9)!important}
 [data-testid="stMetricValue"]{font-weight:900!important;
   letter-spacing:-.03em!important}
 [data-testid="stMetricLabel"]{font-size:.62rem!important;
@@ -4195,7 +4195,7 @@ def se_winrate_ci_svg(wins, losses, w=320, h=74, breakeven=0.5238):
         return ml + (w - ml - mr) * ((v - lo) / (hi - lo))
 
     inside = lo_ci <= breakeven <= hi_ci
-    col = "#60A5FA" if inside else ("#34D399" if p > breakeven else "#F87171")
+    col = "#94A3B8" if inside else ("#34D399" if p > breakeven else "#F87171")
     return (
         f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" '
         f'preserveAspectRatio="xMidYMid meet" style="display:block" '
@@ -4234,7 +4234,7 @@ def stat_strip(items):
 
 # The Fieldline mark; logo.svg is the same mark for the Pages dashboard.
 LOGO_SVG = (
-    '<svg width="52" height="52" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Fieldline"><defs><linearGradient id="fl-g" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#3bffb0"/><stop offset="1" stop-color="#b6ff3b"/></linearGradient><linearGradient id="fl-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#161c26"/><stop offset="1" stop-color="#0b0f15"/></linearGradient></defs><rect x="1" y="1" width="62" height="62" rx="15" fill="url(#fl-b)" stroke="#2a3240" stroke-width="1.5"/><path d="M20 14 V50" stroke="#eef2f7" stroke-width="5" stroke-linecap="round"/><path d="M20 16 H46" stroke="#eef2f7" stroke-width="5" stroke-linecap="round"/><path d="M20 32 H40" stroke="#b6ff3b" stroke-width="5" stroke-linecap="round"/><path d="M30 44 V50 M38 44 V50 M46 44 V50" stroke="#3b4554" stroke-width="2.5" stroke-linecap="round"/></svg>'
+    '<svg width="52" height="52" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Fieldline"><defs><linearGradient id="fl-g" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#22c38e"/><stop offset="1" stop-color="#4fd6a8"/></linearGradient><linearGradient id="fl-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#17263f"/><stop offset="1" stop-color="#0e1a2e"/></linearGradient></defs><rect x="1" y="1" width="62" height="62" rx="15" fill="url(#fl-b)" stroke="#26354d" stroke-width="1.5"/><path d="M20 14 V50" stroke="#eaf0f8" stroke-width="5" stroke-linecap="round"/><path d="M20 16 H46" stroke="#eaf0f8" stroke-width="5" stroke-linecap="round"/><path d="M20 32 H40" stroke="#22c38e" stroke-width="5" stroke-linecap="round"/><path d="M30 44 V50 M38 44 V50 M46 44 V50" stroke="#3a4a63" stroke-width="2.5" stroke-linecap="round"/></svg>'
 )
 
 
@@ -4802,7 +4802,7 @@ def hm_share_text(df, day, min_stars=1):
 HM_CSS = """<style>
 .hm-sec{font-size:.6rem;letter-spacing:.16em;color:#7f97ae;font-weight:800;margin:14px 2px 8px}
 .hm-sum{margin:4px 0 18px;padding:14px 14px 12px;border-radius:18px;
-  background:radial-gradient(120% 140% at 0% 0%,rgba(59,130,246,.22),transparent 55%),
+  background:radial-gradient(120% 140% at 0% 0%,rgba(34,195,142,.22),transparent 55%),
   radial-gradient(120% 140% at 100% 100%,rgba(74,224,170,.14),transparent 55%),rgba(10,22,38,.85);
   border:1px solid rgba(120,154,188,.18)}
 .hm-sum-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;text-align:center}
@@ -4815,8 +4815,8 @@ HM_CSS = """<style>
 .hm-sum-leg{display:flex;justify-content:space-between;font-size:.58rem;color:#71879d;font-weight:700}
 .hm-sum-leg em{font-style:normal}
 .hm-hero{position:relative;overflow:hidden;border-radius:17px;padding:15px 15px 8px;
-  background:linear-gradient(180deg,rgba(47,107,255,.17),rgba(12,26,44,.62));
-  border:1px solid rgba(47,107,255,.36)}
+  background:linear-gradient(180deg,rgba(31,185,133,.17),rgba(12,26,44,.62));
+  border:1px solid rgba(31,185,133,.36)}
 .hm-hero.t3{border-color:rgba(255,217,122,.55);box-shadow:0 18px 50px -18px rgba(255,190,70,.45)}
 .hm-hero.t2{border-color:rgba(74,224,170,.45);box-shadow:0 18px 50px -20px rgba(74,224,170,.35)}
 .hm-hero-top{display:flex;align-items:center;gap:13px}
@@ -6155,7 +6155,7 @@ st.divider()
 st.markdown(
     '<div style="text-align:center;padding:8px 0 4px">'
     '<div style="font-size:.62rem;letter-spacing:.2em;font-weight:900;'
-    'color:#61748C">SUNDAY <span style="color:#60A5FA">EDGE</span></div>'
+    'color:#61748C">FIELDLINE <span style="color:#4FD6A8">NFL</span></div>'
     '<div style="font-size:.66rem;color:#61748C;margin-top:7px;'
     'line-height:1.6;max-width:34rem;margin-left:auto;margin-right:auto">'
     'For entertainment and research. ' + _html.escape(BT_SUMMARY) +
