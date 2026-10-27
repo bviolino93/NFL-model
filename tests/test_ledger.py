@@ -84,3 +84,11 @@ def test_dropped_bet_is_removed_before_kickoff_kept_after():
     h = ledger.merge([], [BET], early, "r1")
     assert ledger.merge(h, [], early, "r2") == []
     assert len(ledger.merge(h, [], late, "r2")) == 1
+
+
+def test_merge_keeps_the_alerted_line():
+    early = datetime(2026, 10, 24, tzinfo=timezone.utc)
+    h = ledger.merge([], [BET], early, "r1")
+    h = ledger.merge(h, [{**BET, "point": 51.5, "price": -110}], early, "r2")
+    assert (h[0]["point"], h[0]["first_point"], h[0]["first_price"]) == \
+        (51.5, 50.5, -105)

@@ -56,7 +56,12 @@ def merge(history: list[dict], picks: list[dict], now: datetime,
         old = out.get(k)
         if old and pd.Timestamp(old["commence"]) <= pd.Timestamp(now):
             continue
+        # The line at first sight is the one the alert went out with, so
+        # it is the one closing-line value is measured from.
+        first = old or p
         out[k] = {**p, "first_seen": (old or {}).get("first_seen", run),
+                  "first_point": first.get("first_point", first["point"]),
+                  "first_price": first.get("first_price", first["price"]),
                   "last_seen": run, "result": None, "profit": None,
                   "pulled": False}
     return sorted(out.values(), key=lambda b: (b["commence"], b["home"]))
