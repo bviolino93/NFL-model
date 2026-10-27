@@ -1,0 +1,84 @@
+name: Weekly review
+
+# Every Tuesday in season, after Monday night's game:
+#   * refits the totals weights in combined_model.json on every graded game
+#     and commits them to main, but only if they pass review.py's check on
+#     games the model never trained on (otherwise the old weights stay)
+#   * posts the week's report to the "Picks alerts" issue: record, units
+#     and closing-line value by market, NFL and college, and big misses
+#     with a known cause
+#
+# Betting rules are never changed here. College picks need no refit: the
+# college engine refits on every graded game each run. Their closing
+# lines come from closes.json on the CFB-model picks branch.
+
+on:
+  schedule:
+    - cron: "0 14 * 9-12,1-2 2"   # Tuesday 14:00 UTC
+  workflow_dispatch:
+    inputs:
+      refit:
+        description: "Refit the totals weights"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: picks          # never alongside a picks run
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache nflverse
+        uses: actions/cache@v4
+        with:
+          path: .cache_nflverse
+          key: nflverse-review-${{ github.run_id }}
+          restore-keys: |
+            nflverse-review-
+            nflverse-picks-
+      - run: pip install pandas numpy pyarrow requests
+      - name: Fetch bet history (NFL and college)
+        run: |
+          mkdir -p site cfb
+          git fetch -q --depth 1 origin picks && \
+            git show FETCH_HEAD:history.json > site/history.json || true
+          git show FETCH_HEAD:paper.json > site/paper.json 2>/dev/null || true
+          raw=https://raw.githubusercontent.com/${{ github.repository_owner }}/CFB-model/picks
+          curl -sfL "$raw/history.json" -o cfb/history.json || true
+          curl -sfL "$raw/closes.json" -o cfb/closes.json || true
+      - name: Review and refit
+        run: |
+          python review.py --history site/history.json --paper site/paper.json \
+            --cfb-history cfb/history.json --cfb-closes cfb/closes.json \
+            --out review.md --owner "${{ github.repository_owner }}" \
+            ${{ (github.event_name == 'schedule' || inputs.refit) && '--refit' || '' }}
+          cat review.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit new weights
+        run: |
+          if git diff --quiet -- combined_model.json; then
+            echo "weights unchanged"; exit 0
+          fi
+          git config user.name "review-bot"
+          git config user.email "review-bot@users.noreply.github.com"
+          git add combined_model.json
+          git commit -qm "Weekly refit of the totals weights $(date -u +%Y-%m-%d)"
+          git push -q origin HEAD:${{ github.event.repository.default_branch }}
+      - name: Post the report
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh issue list --state open --search "Picks alerts in:title" \
+                --json number -q '.[0].number')
+          [ -n "$n" ] && gh issue comment "$n" --body-file review.md
