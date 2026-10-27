@@ -13,6 +13,7 @@ ones that clear the EV bar. Run it from the "Check one game" workflow.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ import picks as pk
 import selector as sel
 
 MARKETS = ("spreads", "totals")
+CHECKS_KEPT = 12
 
 
 def _words(q: str) -> list[str]:
@@ -62,28 +64,28 @@ def _label(r) -> str:
     return f"{r.pick} {r.point:g}"
 
 
-def render(f, priced: pd.DataFrame, bets: pd.DataFrame, ctx: dict,
-           books, min_ev: float, made: str) -> str:
-    """The game report, as Markdown."""
-    kick = pd.to_datetime(f.commence, utc=True).tz_convert(
-        "America/New_York").strftime("%a %b %-d, %-I:%M %p ET")
+def report(f, priced: pd.DataFrame, bets: pd.DataFrame, ctx: dict,
+           books, min_ev: float, now) -> dict:
+    """The game report as a dict (what the Fieldline page shows); to_md()
+    makes the run summary and issue comment from it."""
     c = ctx.get(f.home_team, {})
-    out = [f"# {f.away_team} @ {f.home_team}\n",
-           f"_{kick} · checked {made}_\n"]
-
-    out.append("## What the model makes it\n")
-    out.append("| | Sharp books | Model |\n|---|---|---|")
+    nick = pk._nick
+    d = {"league": "nfl", "found": True, "checked": now.isoformat(),
+         "title": f"{f.away_team} @ {f.home_team}", "away": f.away_team,
+         "home": f.home_team, "kickoff": str(f.commence), "lines": [],
+         "offers": [], "verdicts": []}
     if pd.notna(f.market_margin):
-        out.append(f"| Spread | {_fav(f.home_team, f.away_team, f.market_margin)}"
-                   f" | {_fav(f.home_team, f.away_team, f.margin)} |")
+        d["lines"].append({"market": "Spread",
+                           "sharp": _fav(f.home_team, f.away_team, f.market_margin),
+                           "model": _fav(f.home_team, f.away_team, f.margin)})
     if pd.notna(f.market_total):
-        out.append(f"| Total | {f.market_total:.1f} | {f.total:.1f} |")
-    out.append("")
+        d["lines"].append({"market": "Total", "sharp": f"{f.market_total:.1f}",
+                           "model": f"{f.total:.1f}"})
     if c.get("ratings"):
-        out.append(f"Team ratings plus the injury report have it "
-                   f"{_fav(f.home_team, f.away_team, c['ratings']['margin'])}"
-                   f"; the model moves the sharp line a fifth of the way "
-                   f"there (at most 1 point).\n")
+        d["note"] = (f"Team ratings plus the injury report have it "
+                     f"{_fav(f.home_team, f.away_team, c['ratings']['margin'])}; "
+                     f"the model moves the sharp line a fifth of the way there "
+                     f"(at most 1 point).")
 
     mine = priced[priced["market"].isin(MARKETS)
                   & priced["book"].isin(books)]
@@ -91,24 +93,15 @@ def render(f, priced: pd.DataFrame, bets: pd.DataFrame, ctx: dict,
                 .drop_duplicates(["market", "pick"]))
     bet_keys = {(b.market, b.pick) for b in bets.itertuples()} \
         if len(bets) else set()
+    for m in MARKETS:
+        for r in best[best["market"] == m].itertuples():
+            d["offers"].append({
+                "market": m, "side": _label(r), "price": int(r.price),
+                "book": pk.BOOK_NAME.get(r.book, r.book),
+                "win": round(r.p_win / (1 - r.p_push) if r.p_push < 1 else 0, 4),
+                "ev": round(float(r.ev), 4),
+                "bet": (r.market, r.pick) in bet_keys})
 
-    out.append("## Best price at your books\n")
-    if best.empty:
-        out.append("None of your books has this game up yet.\n")
-    else:
-        out.append("| Side | Price | Book | Win chance | EV |\n"
-                   "|---|---|---|---|---|")
-        for m in MARKETS:
-            for r in best[best["market"] == m].sort_values(
-                    "ev", ascending=False).itertuples():
-                wc = r.p_win / (1 - r.p_push) if r.p_push < 1 else 0
-                mark = " ✅" if (r.market, r.pick) in bet_keys else ""
-                out.append(f"| {_label(r)}{mark} | {int(r.price):+d} | "
-                           f"{pk.BOOK_NAME.get(r.book, r.book)} | "
-                           f"{wc * 100:.1f}% | {r.ev * 100:+.1f}% |")
-        out.append("")
-
-    out.append("## Verdict\n")
     for m in MARKETS:
         side = best[best["market"] == m]
         name = "Spread" if m == "spreads" else "Total"
@@ -118,21 +111,62 @@ def render(f, priced: pd.DataFrame, bets: pd.DataFrame, ctx: dict,
         b = bets[(bets["market"] == m)] if len(bets) else bets
         if len(b):
             p = b.iloc[0]
-            out.append(f"**{name}: bet {_label(top)} ({int(top.price):+d}) at "
-                       f"{pk.BOOK_NAME.get(top.book, top.book)}, "
-                       f"${p.stake:,.2f}.** {p.why}\n")
+            d["verdicts"].append({
+                "market": name, "bet": True,
+                "head": (f"Bet {_label(top)} ({int(top.price):+d}) at "
+                         f"{pk.BOOK_NAME.get(top.book, top.book)}, ${p.stake:,.2f}"),
+                "text": str(p.why)})
             continue
-        verdict = ("pass" if top.ev < min_ev / 2
-                   else f"lean {_label(top)}, but under the bar")
-        line = (f"**{name}: {verdict}.** The best side is {_label(top)} "
-                f"at {top.ev * 100:+.1f}% EV; a bet needs {min_ev * 100:.0f}%.")
+        head = ("Pass" if top.ev < min_ev / 2
+                else f"Lean {_label(top)}, but under the bar")
+        line = (f"The best side is {_label(top)} at {top.ev * 100:+.1f}% EV; "
+                f"a bet needs {min_ev * 100:.0f}%.")
         if m == "totals" and "why_total" in c:
             toward = -1 if str(top.pick).lower() == "under" else 1
             line += " " + nfl_combined.explain(c["why_total"], c["x"], c["h"],
                                                c["a"], "totals", toward=toward)
         if m == "totals" and c.get("wind"):
             line += " " + c["wind"]
-        out.append(line.strip() + "\n")
+        d["verdicts"].append({"market": name, "bet": False, "head": head,
+                              "text": line.strip()})
+    return d
+
+
+def to_md(d: dict) -> str:
+    out = [f"# {d['title']}\n"]
+    made = pd.Timestamp(d["checked"]).strftime("%a %b %-d, %H:%M UTC")
+    if d.get("kickoff"):
+        kick = pd.to_datetime(d["kickoff"], utc=True).tz_convert(
+            "America/New_York").strftime("%a %b %-d, %-I:%M %p ET")
+        out.append(f"_{kick} · checked {made}_\n")
+    if not d.get("found"):
+        return "\n".join(out + [d.get("message", ""), ""])
+
+    out.append("## What the model makes it\n")
+    out.append("| | Sharp books | Model |\n|---|---|---|")
+    out += [f"| {x['market']} | {x['sharp']} | {x['model']} |" for x in d["lines"]]
+    out.append("")
+    if d.get("note"):
+        out.append(d["note"] + "\n")
+    if d.get("message"):
+        out.append(d["message"] + "\n")
+        return "\n".join(out)
+
+    out.append("## Best price at your books\n")
+    if not d["offers"]:
+        out.append("None of your books has this game up yet.\n")
+    else:
+        out.append("| Side | Price | Book | Win chance | EV |\n"
+                   "|---|---|---|---|---|")
+        for o in sorted(d["offers"], key=lambda o: (o["market"], -o["ev"])):
+            out.append(f"| {o['side']}{' ✅' if o['bet'] else ''} | "
+                       f"{o['price']:+d} | {o['book']} | "
+                       f"{o['win'] * 100:.1f}% | {o['ev'] * 100:+.1f}% |")
+        out.append("")
+
+    out.append("## Verdict\n")
+    for v in d["verdicts"]:
+        out.append(f"**{v['market']}: {v['head']}.** {v['text']}".strip() + "\n")
 
     out.append("---\nWin chances are model estimates, not guarantees. The "
                "model hasn't yet shown an edge over closing lines. 21+ "
@@ -140,36 +174,64 @@ def render(f, priced: pd.DataFrame, bets: pd.DataFrame, ctx: dict,
     return "\n".join(out)
 
 
-def run(rows: pd.DataFrame, query: str, books, bankroll: float = 1000.0,
-        min_ev: float = 0.02, wind_fn=None) -> str:
+def check(rows: pd.DataFrame, query: str, books, bankroll: float = 1000.0,
+          min_ev: float = 0.02, wind_fn=None) -> dict:
     now = datetime.now(timezone.utc)
+    base = {"league": "nfl", "query": query, "checked": now.isoformat()}
     ev = find_event(pk.this_week(rows, now) if len(rows) else rows, query)
     if ev is None:
         later = find_event(rows, query)
-        upcoming = pk.this_week(rows, now).drop_duplicates("event_id")
+        upcoming = pk.this_week(rows, now).drop_duplicates("event_id") \
+            if len(rows) else rows
         lst = "\n".join(f"- {g.away_team} @ {g.home_team}"
                         for g in upcoming.itertuples()) or "- none"
         why = ("That game has kicked off or isn't this week, and the model "
                "only prices games before kickoff in the current week."
                if later is not None else f"No game matches \"{query}\".")
-        return f"# No game found\n\n{why}\n\nThis week's games:\n\n{lst}\n"
+        return {**base, "found": False, "title": "No game found",
+                "message": f"{why}\n\nThis week's games:\n\n{lst}"}
     ctx = {}
     bets, fair, priced = pk.build_picks(rows[rows["event_id"] == ev], books,
                                         bankroll, min_ev, wind_fn=wind_fn,
                                         ctx_out=ctx)
     if priced.empty:
         f = next(iter(fair.values()), None)
-        title = f"{f.away_team} @ {f.home_team}" if f else query
-        return (f"# {title}\n\nNot enough books have lines up to price it "
-                f"(need {sel.Policy().min_books}).\n")
-    return render(fair[ev], priced, bets, ctx, books, min_ev,
-                  now.strftime("%a %b %-d, %H:%M UTC"))
+        return {**base, "found": False,
+                "title": f"{f.away_team} @ {f.home_team}" if f else query,
+                "message": (f"Not enough books have lines up to price it "
+                            f"(need {sel.Policy().min_books}).")}
+    return {**report(fair[ev], priced, bets, ctx, books, min_ev, now),
+            "query": query}
+
+
+def run(rows: pd.DataFrame, query: str, books, bankroll: float = 1000.0,
+        min_ev: float = 0.02, wind_fn=None) -> str:
+    return to_md(check(rows, query, books, bankroll, min_ev, wind_fn))
+
+
+def save_check(path: str, d: dict, keep: int = CHECKS_KEPT) -> None:
+    """Newest first, one entry per game (a re-check replaces the old one).
+    The Fieldline page (CFB-model share/index.html) reads this."""
+    try:
+        with open(path) as fh:
+            checks = json.load(fh).get("checks", [])
+    except (OSError, ValueError):
+        checks = []
+    same = lambda c: (c.get("title") == d["title"] and c.get("found")
+                      and d.get("found"))
+    checks = [d] + [c for c in checks if not same(c)]
+    with open(path, "w") as fh:
+        json.dump({"updated": d["checked"], "checks": checks[:keep]}, fh,
+                  indent=1, default=str)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("game", nargs="+", help='team name(s), e.g. Chiefs')
     ap.add_argument("--md", default="game.md")
+    ap.add_argument("--checks", default="",
+                    help="add the result to this checks.json (the page reads it)")
+    ap.add_argument("--run-url", default="", help="link back to the run")
     ap.add_argument("--bankroll", type=float, default=1000.0)
     ap.add_argument("--min-ev", type=float, default=0.02)
     ap.add_argument("--books",
@@ -187,9 +249,14 @@ def main():
             raise SystemExit("set ODDS_API_KEY")
         rows = pk.fetch_rows(key)
     books = [b.strip() for b in a.books.split(",") if b.strip()]
-    md = run(rows, " ".join(a.game), books, a.bankroll, a.min_ev)
+    d = check(rows, " ".join(a.game), books, a.bankroll, a.min_ev)
+    if a.run_url:
+        d["run"] = a.run_url
+    md = to_md(d)
     with open(a.md, "w") as fh:
         fh.write(md)
+    if a.checks:
+        save_check(a.checks, d)
     sys.stdout.write(md)
 
 
