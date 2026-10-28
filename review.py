@@ -61,6 +61,8 @@ def clv(bet: dict, close_spread_home: float | None,
     at. Spread bets: our side's point minus its closing point (took +3,
     closed +2 = +1). Totals: over at 44 closing 45 = +1."""
     point = bet.get("first_point", bet["point"])
+    if bet["market"] == "h2h":
+        return None          # moneylines: ml_clv, from closing prices
     if bet["market"] == "totals":
         if close_total is None or pd.isna(close_total):
             return None
@@ -71,6 +73,21 @@ def clv(bet: dict, close_spread_home: float | None,
     close = close_spread_home if bet["pick"] == bet["home"] \
         else -close_spread_home
     return round(float(point - close), 2)
+
+
+def ml_clv(bet: dict, close_home: float | None,
+           close_away: float | None) -> float | None:
+    """Moneylines: the bet side's de-vigged closing win chance minus the
+    chance its alerted price needed, in percentage points (took +170,
+    needs 37.0%; closed at a fair 39.5% = +2.5)."""
+    if close_home is None or close_away is None \
+            or pd.isna(close_home) or pd.isna(close_away):
+        return None
+    from selector import american_to_prob
+    h, a = american_to_prob(close_home), american_to_prob(close_away)
+    fair = (h if bet["pick"] == bet["home"] else a) / (h + a)
+    need = american_to_prob(bet.get("first_price", bet["price"]))
+    return round(100 * float(fair - need), 2)
 
 
 def nfl_closes(bets: list[dict], games: pd.DataFrame, abbr: dict) -> list[dict]:
@@ -91,6 +108,9 @@ def nfl_closes(bets: list[dict], games: pd.DataFrame, abbr: dict) -> list[dict]:
         tot = float(m.total_line) if pd.notna(m.total_line) else None
         b["close_spread"], b["close_total"] = sp, tot
         b["clv"] = clv(b, sp, tot)
+        if b["market"] == "h2h":
+            b["clv"] = ml_clv(b, m.get("home_moneyline"),
+                              m.get("away_moneyline"))
     return bets
 
 
@@ -103,6 +123,11 @@ def cfb_closes(bets: list[dict], closes: dict) -> list[dict]:
             continue
         b["close_spread"], b["close_total"] = c.get("spread"), c.get("total")
         b["clv"] = clv(b, b["close_spread"], b["close_total"])
+        if b["market"] == "h2h" and c.get("p_home") is not None:
+            from selector import american_to_prob
+            fair = c["p_home"] if b["pick"] == b["home"] else 1 - c["p_home"]
+            need = american_to_prob(b.get("first_price", b["price"]))
+            b["clv"] = round(100 * float(fair - need), 2)
     return bets
 
 
@@ -180,6 +205,8 @@ def big_misses(bets: list[dict], games: pd.DataFrame | None = None,
         a, h = (int(x) for x in b["final"].split("-"))
         if b["market"] == "totals":
             by = abs(a + h - b["point"])
+        elif b["market"] == "h2h":
+            continue         # an underdog losing is the usual outcome
         else:
             mine, theirs = (h, a) if b["pick"] == b["home"] else (a, h)
             by = theirs - mine - (b["point"] or 0)
@@ -288,7 +315,8 @@ def refit_text(c: dict) -> list[str]:
 def _row(name: str, s: dict) -> str:
     rec = f"{s['wins']}-{s['losses']}" + (f"-{s['pushes']}" if s["pushes"] else "")
     roi = f"{s['roi']:+.1%}" if s["roi"] is not None else "–"
-    c = (f"{s['clv']:+.2f} pts ({s['beat_close']:.0%} beat it, n={s['clv_n']})"
+    unit = "% win chance" if "moneyline" in name else " pts"
+    c = (f"{s['clv']:+.2f}{unit} ({s['beat_close']:.0%} beat it, n={s['clv_n']})"
          if s["clv"] is not None else "–")
     flag = " ⚠️" if flagged(s) else ""
     return f"| {name}{flag} | {rec} | {s['units']:+.2f}u | {roi} | {c} |"
@@ -315,7 +343,7 @@ def report(sections: dict[str, list[dict]], misses: list[str],
     bad = [k for k, s in stats.items() if flagged(s)]
     if bad:
         out += ["", "**⚠️ Negative CLV over a meaningful sample**: "
-                + ", ".join(f"{k} ({stats[k]['clv']:+.2f} pts over "
+                + ", ".join(f"{k} ({stats[k]['clv']:+.2f}{' pct' if 'moneyline' in k else ' pts'} over "
                             f"{stats[k]['clv_n']} bets)" for k in bad)
                 + ". The closing line is moving away from these bets, "
                 "which says the market disagrees with the model more often "
@@ -333,8 +361,12 @@ def report(sections: dict[str, list[dict]], misses: list[str],
 
 
 def split(bets: list[dict], league: str) -> dict[str, list[dict]]:
-    return {f"{league} spreads": [b for b in bets if b["market"] == "spreads"],
-            f"{league} totals": [b for b in bets if b["market"] == "totals"]}
+    out = {f"{league} spreads": [b for b in bets if b["market"] == "spreads"],
+           f"{league} totals": [b for b in bets if b["market"] == "totals"]}
+    dogs = [b for b in bets if b["market"] == "h2h"]
+    if dogs:
+        out[f"{league} underdog moneylines"] = dogs
+    return out
 
 
 def _load(path: str, default):

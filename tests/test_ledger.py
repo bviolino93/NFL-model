@@ -92,3 +92,10 @@ def test_merge_keeps_the_alerted_line():
     h = ledger.merge(h, [{**BET, "point": 51.5, "price": -110}], early, "r2")
     assert (h[0]["point"], h[0]["first_point"], h[0]["first_price"]) == \
         (51.5, 50.5, -105)
+
+
+def test_grade_moneyline():
+    b = {"market": "h2h", "pick": "A", "home": "H", "away": "A", "point": None}
+    assert ledger.grade_one(b, 20, 24) == "win"
+    assert ledger.grade_one(b, 24, 20) == "loss"
+    assert ledger.grade_one({**b, "point": float("nan")}, 17, 17) == "push"

@@ -80,7 +80,7 @@ def grade_one(b: dict, home_score: float, away_score: float) -> str:
     else:
         mine, theirs = ((home_score, away_score) if b["pick"] == b["home"]
                         else (away_score, home_score))
-        diff = mine - theirs + (b["point"] or 0)
+        diff = mine - theirs + (0 if b["market"] == "h2h" else b["point"] or 0)
     return "win" if diff > 0 else "loss" if diff < 0 else "push"
 
 

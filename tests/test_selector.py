@@ -108,3 +108,46 @@ def test_clv_sign():
     good = {"market": "spreads", "pick": "Home", "point": -1.5, "price": -110}
     bad = {"market": "spreads", "pick": "Home", "point": -4.5, "price": -110}
     assert S.clv(good, close, mm, tm) > 0 > S.clv(bad, close, mm, tm)
+
+
+def _ml(book, home, away):
+    return [{"book": book, "market": "h2h", "outcome": "Home", "point": None,
+             "price": home},
+            {"book": book, "market": "h2h", "outcome": "Away", "point": None,
+             "price": away}]
+
+
+def test_moneyline_priced_from_the_moneyline_market():
+    mm, tm = _models()
+    rows = []
+    for bk in ("pinnacle", "b1", "b2", "b3"):
+        rows += _game(bk, -3.0) + _ml(bk, -160, 140)
+    rows += _game("soft", -3.0) + _ml("soft", -170, 165)   # dog paid long
+    snap = _snap(rows)
+    fair = S.consensus(snap, mm, tm)
+    f = fair["e1"]
+    a, h = S.american_to_prob(140), S.american_to_prob(-160)
+    assert abs(f.market_p_home - h / (a + h)) < 1e-9
+    priced = S.price_offers(snap, fair, mm, tm)
+    ml = priced[(priced.market == "h2h") & (priced.pick == "Away")]
+    soft = ml[ml.book == "soft"].iloc[0]
+    sharp = ml[ml.book == "pinnacle"].iloc[0]
+    assert soft.ev > 0.02 > sharp.ev
+    # The market's own price, not the spread's: no adjustment, so the
+    # chance is the de-vigged moneyline (ties aside).
+    assert abs(soft.p_win / (1 - soft.p_push) - a / (a + h)) < 1e-6
+
+
+def test_moneyline_moves_with_a_spread_adjustment():
+    mm, tm = _models()
+    rows = []
+    for bk in ("pinnacle", "b1", "b2", "b3"):
+        rows += _game(bk, -3.0) + _ml(bk, -160, 140)
+    snap = _snap(rows)
+    fair = S.consensus(snap, mm, tm)
+    before = S.price_offers(snap, fair, mm, tm)
+    S.apply_adjustments(fair, [S.Adjustment("Home", "spreads", -1.0,
+                                            "ratings")])
+    after = S.price_offers(snap, fair, mm, tm)
+    pick = lambda d: d[(d.market == "h2h") & (d.pick == "Away")].p_win.iloc[0]
+    assert 0.01 < pick(after) - pick(before) < 0.06
