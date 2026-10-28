@@ -164,6 +164,17 @@ COMBINED_MARKETS = {"totals"}
 RATINGS_SPREAD_WEIGHT = 0.2
 RATINGS_SPREAD_CAP = 1.0      # points; keeps win chances near the backtest
 
+# Underdog moneylines (Brian, 2026-10-28). moneyline_research.py: nothing
+# in 2010-26 closing moneylines beats the close. Every dog loses ~2-6% (the
+# vig), dogs past +400 ~17%, and dogs our ratings like went -13% to -20% in
+# 2022-26. So these are priced off the moneyline market itself (de-vigged,
+# sharp-weighted), moved only by the same capped ratings nudge the spreads
+# get, and bet when DraftKings/FanDuel pay more than that is worth: mostly
+# a line-shopping bet. Small, separate stakes, a few a week, nothing long.
+DOG_MAX_PRICE = 300           # +300 or shorter; long shots lose the most
+DOG_MAX_BETS = 3              # the best few each week
+DOG_MAX_STAKE = 0.01          # of bankroll per dog ($10 on $1,000)
+
 
 def _nick(team: str) -> str:
     return str(team).split()[-1]
@@ -197,6 +208,14 @@ def explain_spread(p, m: dict) -> str:
                  f"they lose by {lose} ({room:.1f} pts of room).")
     else:
         call += (f", {room:.1f} more than the {-line:g} they're giving.")
+    return " ".join([call] + _matchup(p, m))
+
+
+def _matchup(p, m: dict) -> list[str]:
+    """The ratings pieces behind the model's margin for the side picked:
+    what pushes its way, and the biggest things pushing back."""
+    side = 1 if p.pick == p.home else -1
+    opp = _nick(p.away if side > 0 else p.home)
     parts = []
     if "pass_off" in m:
         qb_me = _last(m["home_qb"] if side > 0 else m["away_qb"])
@@ -217,7 +236,7 @@ def explain_spread(p, m: dict) -> str:
     if inj >= 0.5:
         parts.append((inj, f"the injury report (+{inj:.1f})"))
     parts.sort(reverse=True)
-    why = [call]
+    why = []
     if parts:
         why.append("Where the edge comes from: "
                    + ", ".join(t for _, t in parts[:4]) + ".")
@@ -240,6 +259,39 @@ def explain_spread(p, m: dict) -> str:
         against.sort(reverse=True)
         why.append("Working against it: " + ", ".join(
             f"{t} ({v:.1f})" for v, t in against[:2]) + ".")
+    return why
+
+
+def explain_dog(p, m: dict | None) -> str:
+    """An underdog moneyline: what the price needs, what we think, and the
+    football behind it when the ratings like this side."""
+    me = _nick(p.pick)
+    need = sel.american_to_prob(p.price)
+    fair = p.fair_market
+    dog_by = abs(fair)
+    book = BOOK_NAME.get(p.book, p.book)
+    why = [f"{book} pays {int(p.price):+d} on the {me}, which needs a "
+           f"{need:.0%} win chance; we make it {p.win_chance:.0%}."]
+    side = 1 if p.pick == p.home else -1
+    if m and side * (m["margin"] - fair) > 0:
+        mine = side * m["margin"]
+        if mine >= 0:
+            why.append(f"The market has them as {dog_by:.1f}-point underdogs, "
+                       f"but the model has the {me} winning by {mine:.1f}.")
+        else:
+            why.append(f"The market has them as {dog_by:.1f}-point underdogs; "
+                       f"the model has them losing by only {-mine:.1f}.")
+        why += _matchup(p, m)
+    if "market" in str(p.sources).split(","):
+        # The sharp books' chance for this side, from the offer's EV at
+        # the unadjusted market line.
+        q = (p.ev_market + 1 - p.p_push) / (sel.payout(p.price) + 1)
+        q /= max(1e-9, 1 - p.p_push)
+        fair_odds = 100 * (1 - q) / q if q < 0.5 else -100 * q / (1 - q)
+        why.append(f"{'Also, the' if len(why) > 1 else 'The'} sharp books' "
+                   f"moneylines make the {me} worth about {fair_odds:+.0f}, "
+                   f"so {book} is paying more than the market thinks they "
+                   "are worth.")
     return " ".join(why)
 
 
@@ -264,6 +316,8 @@ def explain_pick(p, ctx: dict) -> str:
     why = []
     c = ctx.get(p.home, {})
     m = c.get("ratings")
+    if p.market == "h2h":
+        return explain_dog(p, m)
     side = 1 if p.pick == p.home else -1
     rated = (p.market == "spreads" and "ratings" in str(p.sources) and m
              and side * (m["margin"] - p.fair_market) > 0)
@@ -383,12 +437,41 @@ def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
     bettable = priced[priced["market"].isin(["spreads", "totals"])]
     bettable = bettable[bettable["book"].isin(my_books or US_BOOKS)]
     picks = sel.select(bettable, bankroll, pol)
+    dogs = underdogs(priced[priced["book"].isin(my_books or US_BOOKS)],
+                     bankroll, pol)
+    if len(dogs):
+        picks = pd.concat([picks, dogs], ignore_index=True)
+        # a moneyline has no point; None, not NaN, so picks.json stays JSON
+        picks["point"] = picks["point"].astype(object).where(
+            picks["market"] != "h2h", None)
     if len(picks):
         picks["win_chance"] = picks["p_win"] / (1 - picks["p_push"])
         picks["why"] = [explain_pick(p, ctx) for p in picks.itertuples()]
         picks["injuries"] = [injuries_for(p, ctx) for p in picks.itertuples()]
         picks["book"] = picks["book"].map(lambda b: BOOK_NAME.get(b, b))
     return picks, fair, priced
+
+
+def underdogs(priced: pd.DataFrame, bankroll: float,
+              policy: sel.Policy) -> pd.DataFrame:
+    """The best few underdog moneylines: a dog in the market (under 50% to
+    win at the sharp books) at +100 to DOG_MAX_PRICE, whose price clears
+    the EV bar. Quarter Kelly, at most DOG_MAX_STAKE each."""
+    if priced.empty:
+        return priced
+    d = priced[(priced["market"] == "h2h") & (priced["price"] >= 100)
+               & (priced["price"] <= DOG_MAX_PRICE)
+               & (priced["ev"] >= policy.min_ev)].copy()
+    if d.empty:
+        return d
+    fav_home = d["fair_market"] >= 0
+    d = d[(d["pick"] == d["home"]) != fav_home]
+    d = (d.sort_values("ev", ascending=False)
+          .drop_duplicates(["event_id", "pick"]).head(DOG_MAX_BETS))
+    d["stake"] = (np.minimum(d["kelly"] * policy.kelly_mult, DOG_MAX_STAKE)
+                  * bankroll).round(2)
+    d["point"] = None
+    return d.reset_index(drop=True)
 
 
 def _bet_label(p) -> str:
@@ -450,7 +533,8 @@ def render_md(picks: pd.DataFrame, made: str) -> str:
                    f"{p.win_chance * 100:.1f}% · EV {p.ev * 100:.1f}%  \n"
                    f"{p.away} @ {p.home} · {kick}\n\n{p.why}\n")
     out.append("---\nQuarter-Kelly stakes on a $1,000 bankroll, capped at 2% "
-               "per bet and 10% per slate. Win chances are model estimates, "
+               "per bet and 10% per slate (underdog moneylines: 1% each, "
+               "best three). Win chances are model estimates, "
                "not guarantees. 21+ where legal; 1-800-GAMBLER.\n")
     return "\n".join(out)
 

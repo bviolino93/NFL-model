@@ -60,3 +60,27 @@ def test_qb_surprise_named_as_cause_of_a_big_miss():
     assert "bad beat" in m[0]
     # a narrow loss with no known cause isn't listed
     assert review.big_misses([{**b, "final": "17-13", "why": "Huntley"}], g, ABBR) == []
+
+
+def test_moneyline_clv_from_closing_prices():
+    dog = {**BET, "market": "h2h", "pick": "Cincinnati Bengals", "point": None,
+           "price": 170, "first_price": 170}
+    g = pd.DataFrame([{"game_id": "x", "home_team": "BAL", "away_team": "CIN",
+                       "gameday": "2026-10-25", "spread_line": 3.0,
+                       "total_line": 46.5, "home_moneyline": -160,
+                       "away_moneyline": 140}])
+    b = review.nfl_closes([dog], g, ABBR)[0]
+    # closed at a fair ~40.0%; +170 needed 37.0%
+    assert 2.5 < b["clv"] < 3.5
+    s = review.split([b, dict(BET)], "NFL")
+    assert list(s) == ["NFL spreads", "NFL totals", "NFL underdog moneylines"]
+    assert "% win chance" in review._row("NFL underdog moneylines",
+                                         review.market_stats([b]))
+
+
+def test_cfb_moneyline_clv_from_recorded_close():
+    dog = {**BET, "market": "h2h", "pick": "Cincinnati Bengals", "point": None,
+           "price": 170}
+    k = f"{BET['away']}|{BET['home']}|2026-10-25"
+    b = review.cfb_closes([dog], {k: {"spread": -3.0, "p_home": 0.6}})[0]
+    assert 2.9 < b["clv"] < 3.1

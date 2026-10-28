@@ -171,6 +171,9 @@ class Fair:
     commence: str
     market_margin: float = float("nan")
     market_total: float = float("nan")
+    # De-vigged moneyline chance the home team wins (ties aside), from
+    # every book's moneyline; the fair price for moneyline bets.
+    market_p_home: float = float("nan")
     margin: float = float("nan")         # after active adjustments
     total: float = float("nan")
     adjustments: list = field(default_factory=list)
@@ -226,6 +229,17 @@ def consensus(snap: pd.DataFrame, margin_model: OutcomeModel,
                        american_to_prob(u["price"].iloc[0]))
         mu = total_model.fair_centre(float(o["point"].iloc[0]), p_o)
         est.setdefault((ev, "t"), []).append((mu, BOOK_WEIGHT.get(book, 1.0)))
+    ml = snap[snap["market"] == "h2h"]
+    for (ev, book), grp in ml.groupby(["event_id", "book"]):
+        home = meta.loc[ev, "home_team"]
+        h = grp[grp["outcome"] == home]
+        a = grp[(grp["outcome"] != home)
+                & (grp["outcome"].str.lower() != "draw")]
+        if len(grp) != 2 or h.empty or a.empty:
+            continue
+        p_h, _ = devig(american_to_prob(h["price"].iloc[0]),
+                       american_to_prob(a["price"].iloc[0]))
+        est.setdefault((ev, "ml"), []).append((p_h, BOOK_WEIGHT.get(book, 1.0)))
     for ev, r in meta.iterrows():
         f = Fair(r["home_team"], r["away_team"], r["commence_time"])
         if (ev, "m") in est:
@@ -234,6 +248,9 @@ def consensus(snap: pd.DataFrame, margin_model: OutcomeModel,
         if (ev, "t") in est:
             v, w = zip(*est[(ev, "t")])
             f.market_total = f.total = _wmedian(v, w)
+        if (ev, "ml") in est:
+            v, w = zip(*est[(ev, "ml")])
+            f.market_p_home = _wmedian(v, w)
         out[ev] = f
     return out
 
@@ -289,6 +306,16 @@ def _win_push(r, f, margin, total, margin_model, total_model):
         return (pw if over else 1.0 - pw - pp), pp, total
     if r.market == "h2h" and math.isfinite(margin):
         p_home, p_tie = margin_model.probs(margin, 0.0)
+        if math.isfinite(f.market_p_home) and math.isfinite(f.market_margin):
+            # Start from the moneyline market's own price (the spread
+            # market overrates long underdogs: the margin distribution
+            # gives them more wins than they get), then move it only by
+            # what the adjustments do to the win chance on the margin
+            # distribution.
+            p0, t0 = margin_model.probs(f.market_margin, 0.0)
+            p_home = (f.market_p_home * (1 - p_tie)
+                      + (p_home - p0) * (1 - p_tie) / max(1e-9, 1 - t0))
+            p_home = min(max(p_home, 0.0), 1.0 - p_tie)
         # Ties are rare; most books grade them as a push.
         pw = p_home if r.outcome == f.home_team else 1 - p_home - p_tie
         return pw, p_tie, margin
@@ -377,6 +404,8 @@ def clv(bet: dict, close_fair: Fair, margin_model, total_model) -> float:
             pw = 1 - pw - pp
     else:
         p_home, pp = margin_model.probs(close_fair.market_margin, 0.0)
+        if math.isfinite(close_fair.market_p_home):
+            p_home = close_fair.market_p_home * (1 - pp)
         pw = p_home if pick == close_fair.home_team else 1 - p_home - pp
     return pw * payout(price) - (1 - pw - pp)
 

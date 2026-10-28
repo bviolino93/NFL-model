@@ -43,3 +43,39 @@ def test_injuries_for_lists_both_teams_and_skips_ir_on_totals():
         ("Cowboys", "C"), ("Eagles", "A"), ("Eagles", "B"), ("Eagles", "Q")]
     assert [x["name"] for x in picks.injuries_for(tot, ctx)] == ["C", "A", "Q"]
     assert picks.injuries_for(sp, {}) == []
+
+
+def test_underdog_reason_names_price_model_and_football():
+    p = _pick(market="h2h", point=None, price=170, win_chance=0.41,
+              fair_market=4.2, sources="ratings", ev_market=-0.03, p_push=0.0)
+    why = picks.explain_pick(p, {"Dallas Cowboys": {"ratings": M}})
+    assert why.startswith("FanDuel pays +170 on the Eagles, which needs a 37%")
+    assert "we make it 41%" in why
+    assert "the model has the Eagles winning by 2.8" in why
+    assert "their passing game (+1.9)" in why
+    assert "sharp" not in why
+
+
+def test_underdog_line_shopping_reason_gives_the_sharp_price():
+    p = _pick(market="h2h", point=None, price=170, win_chance=0.38,
+              fair_market=4.2, sources="market", ev_market=0.03, p_push=0.0)
+    why = picks.explain_pick(p, {})
+    assert "sharp books' moneylines make the Eagles worth about +162" in why
+
+
+def test_underdogs_keeps_the_best_few_short_dogs_only():
+    import pandas as pd
+    import selector as sel
+    rows = []
+    for i, (price, ev, fair) in enumerate([(150, 0.05, 3.0), (180, 0.08, 4.0),
+                                           (450, 0.20, 10.0), (130, 0.01, 2.0),
+                                           (120, 0.04, 2.5), (110, 0.03, 1.5),
+                                           (-120, 0.06, -1.0)]):
+        rows.append({"event_id": f"e{i}", "home": "H", "away": f"A{i}",
+                     "market": "h2h", "pick": f"A{i}", "price": price,
+                     "ev": ev, "fair_market": fair, "kelly": 0.2,
+                     "book": "draftkings", "point": None})
+    rows.append({**rows[0], "pick": "H", "price": 105, "ev": 0.3})  # favourite
+    d = picks.underdogs(pd.DataFrame(rows), 1000, sel.Policy())
+    assert list(d.pick) == ["A1", "A0", "A4"]
+    assert (d.stake == 10.0).all()
