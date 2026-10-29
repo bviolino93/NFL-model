@@ -18,18 +18,19 @@ name: Picks
 
 on:
   schedule:
-    # GitHub can start scheduled runs hours late (the 15:00 run on
-    # 2026-10-25 began at 18:13), so Sunday gets an earlier run as well.
-    - cron: "30 13 * 9-12,1-2 0"   # Sunday 13:30 UTC
-    - cron: "0 15 * 9-12,1-2 0"    # Sunday 15:00 UTC, before the early games
-    # GitHub also drops scheduled runs outright (Thursday 19:00 on
-    # 2026-10-29 never started), so prime-time days get a backup run.
+    # GitHub runs schedules best-effort: starts can be hours late (the 15:00
+    # run on 2026-10-25 began at 18:13, Monday 20:00 on 2026-10-26 at
+    # 23:35) or dropped outright (Thursday 19:00 on 2026-10-29 never
+    # started). It's worst at the top of the hour, when everyone's cron
+    # fires, so these sit at odd minutes, and every game day gets two runs.
     # Extra runs are safe: the ledger keeps one entry per bet and only new
     # bets alert.
-    - cron: "0 16 * 9-12,1-2 4"    # Thursday 16:00 UTC
-    - cron: "0 19 * 9-12,1-2 4"    # Thursday 19:00 UTC
-    - cron: "0 17 * 9-12,1-2 1"    # Monday 17:00 UTC
-    - cron: "0 20 * 9-12,1-2 1"    # Monday 20:00 UTC
+    - cron: "37 12 * 9-12,1-2 0"   # Sunday 12:37 UTC
+    - cron: "43 14 * 9-12,1-2 0"   # Sunday 14:43 UTC, before the early games
+    - cron: "17 15 * 9-12,1-2 4"   # Thursday 15:17 UTC
+    - cron: "47 18 * 9-12,1-2 4"   # Thursday 18:47 UTC
+    - cron: "17 16 * 9-12,1-2 1"   # Monday 16:17 UTC
+    - cron: "47 19 * 9-12,1-2 1"   # Monday 19:47 UTC
   workflow_dispatch:
     inputs:
       bankroll:
