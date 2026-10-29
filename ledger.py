@@ -3,10 +3,10 @@ Bet history for the picks dashboard: every bet the scheduled runs suggested,
 graded against final scores.
 
 Each run's picks are merged into the previous history.json (read back from
-the `picks` branch). A bet is keyed by game, market and side; a later run
-before kickoff replaces it (the line or stake may have moved), and once the
-game starts the last version stands. Final scores come from nflverse
-games.csv, so a bet is graded the first run after the score is posted.
+the `picks` branch). A bet is keyed by game, market and side and locked in
+as first alerted; later runs don't change or remove it. Final scores come
+from nflverse games.csv, so a bet is graded the first run after the score
+is posted.
 """
 
 from __future__ import annotations
@@ -36,11 +36,15 @@ def load(path: str) -> list[dict]:
 
 def merge(history: list[dict], picks: list[dict], now: datetime,
           run: str) -> list[dict]:
-    """A bet a later run no longer suggests before kickoff (the line moved
-    or a book caught up) is dropped: only bets still on the board at the
-    last run before the game are kept and graded. Old files may hold
-    bets marked pulled; those are dropped too."""
-    current = {_key(p) for p in picks}
+    """Every bet a run suggests is locked in at the line, price and stake it
+    was first alerted at, and graded at those, even if a later run drops it
+    (the line moved or a book caught up): the alert is when it gets bet, so
+    that's the bet the track record counts. Later runs before kickoff only
+    note whether it's still on the board and at what line. Old files may
+    hold bets marked pulled; those are dropped."""
+    now = pd.Timestamp(now)
+    current = {_key(p): p for p in picks}
+
     # Bets first seen after kickoff came from live in-game lines (a late
     # run before the in-play filter); they were never real pre-game bets.
     def pregame(b):
@@ -48,22 +52,21 @@ def merge(history: list[dict], picks: list[dict], now: datetime,
         return pd.isna(seen) or seen < pd.Timestamp(b["commence"])
 
     out = {_key(b): b for b in history
-           if not b.get("pulled") and pregame(b)
-           and (_key(b) in current
-                or pd.Timestamp(b["commence"]) <= pd.Timestamp(now))}
-    for p in picks:
-        k = _key(p)
-        old = out.get(k)
-        if old and pd.Timestamp(old["commence"]) <= pd.Timestamp(now):
+           if not b.get("pulled") and pregame(b)}
+    for k, b in out.items():
+        if pd.Timestamp(b["commence"]) <= now:
             continue
-        # The line at first sight is the one the alert went out with, so
-        # it is the one closing-line value is measured from.
-        first = old or p
-        out[k] = {**p, "first_seen": (old or {}).get("first_seen", run),
-                  "first_point": first.get("first_point", first["point"]),
-                  "first_price": first.get("first_price", first["price"]),
-                  "last_seen": run, "result": None, "profit": None,
-                  "pulled": False}
+        p = current.get(k)
+        b["on_board"] = p is not None
+        if p is not None:
+            b.update(last_seen=run, now_point=p["point"], now_price=p["price"])
+    for k, p in current.items():
+        if k in out or pd.Timestamp(p["commence"]) <= now:
+            continue
+        out[k] = {**p, "first_seen": run, "first_point": p["point"],
+                  "first_price": p["price"], "last_seen": run,
+                  "result": None, "profit": None, "pulled": False,
+                  "on_board": True}
     return sorted(out.values(), key=lambda b: (b["commence"], b["home"]))
 
 

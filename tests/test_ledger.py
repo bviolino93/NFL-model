@@ -17,14 +17,15 @@ def _games(away, home):
                           "away_score": away}])
 
 
-def test_merge_updates_before_kickoff_then_freezes():
+def test_merge_locks_the_alerted_bet():
     early = datetime(2026, 10, 24, tzinfo=timezone.utc)
     late = datetime(2026, 10, 25, 18, tzinfo=timezone.utc)
     h = ledger.merge([], [BET], early, "r1")
-    h = ledger.merge(h, [{**BET, "price": -110}], early, "r2")
-    assert len(h) == 1 and h[0]["price"] == -110 and h[0]["first_seen"] == "r1"
+    h = ledger.merge(h, [{**BET, "price": -110, "stake": 30.0}], early, "r2")
+    assert len(h) == 1 and h[0]["first_seen"] == "r1"
+    assert (h[0]["price"], h[0]["stake"], h[0]["now_price"]) == (-105, 21.0, -110)
     h = ledger.merge(h, [{**BET, "price": +100}], late, "r3")
-    assert h[0]["price"] == -110
+    assert h[0]["price"] == -105 and h[0]["now_price"] == -110
 
 
 def test_grade_totals_and_spreads():
@@ -78,20 +79,21 @@ def test_kickoff_time_shift_is_the_same_bet():
     assert ledger._key(moved) == ledger._key(h[0])
 
 
-def test_dropped_bet_is_removed_before_kickoff_kept_after():
+def test_dropped_bet_stays_in_the_record():
     early = datetime(2026, 10, 25, 13, tzinfo=timezone.utc)
-    late = datetime(2026, 10, 25, 18, tzinfo=timezone.utc)
     h = ledger.merge([], [BET], early, "r1")
-    assert ledger.merge(h, [], early, "r2") == []
-    assert len(ledger.merge(h, [], late, "r2")) == 1
+    h = ledger.merge(h, [], early, "r2")
+    assert len(h) == 1 and h[0]["on_board"] is False and h[0]["point"] == 50.5
+    h = ledger.merge(h, [BET], early, "r3")
+    assert len(h) == 1 and h[0]["on_board"] is True and h[0]["first_seen"] == "r1"
 
 
 def test_merge_keeps_the_alerted_line():
     early = datetime(2026, 10, 24, tzinfo=timezone.utc)
     h = ledger.merge([], [BET], early, "r1")
     h = ledger.merge(h, [{**BET, "point": 51.5, "price": -110}], early, "r2")
-    assert (h[0]["point"], h[0]["first_point"], h[0]["first_price"]) == \
-        (51.5, 50.5, -105)
+    assert (h[0]["point"], h[0]["price"], h[0]["now_point"]) == \
+        (50.5, -105, 51.5)
 
 
 def test_grade_moneyline():

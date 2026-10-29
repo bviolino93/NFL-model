@@ -301,7 +301,9 @@ footer{color:var(--mute);font-size:.75rem;margin-top:32px}
         [`${label(b)} (${odds(b.price)})`], [b.book],
         [money(b.stake), "r"], [pct(b.win_chance, 0), "r"],
         [b.final || ""],
-        b.pulled ? ["pulled (line moved)", "open"] : [b.result || "open", b.result || "open"],
+        b.pulled ? ["pulled (line moved)", "open"]
+          : !b.result && b.on_board === false ? ["open (off the board, still counts)", "open"]
+          : [b.result || "open", b.result || "open"],
         [b.profit == null ? "" : signed(b.profit), "r " + (b.result || "")],
       ]));
   } else {
