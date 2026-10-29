@@ -1,0 +1,157 @@
+{
+ "updated": "2026-10-29T21:25:32.992673+00:00",
+ "checks": [
+  {
+   "league": "nfl",
+   "found": true,
+   "checked": "2026-10-29T21:25:32.992673+00:00",
+   "title": "Carolina Panthers @ Green Bay Packers",
+   "away": "Carolina Panthers",
+   "home": "Green Bay Packers",
+   "kickoff": "2026-10-30T00:15:00Z",
+   "lines": [
+    {
+     "market": "Spread",
+     "sharp": "Packers by 4.0",
+     "model": "Packers by 4.7"
+    },
+    {
+     "market": "Total",
+     "sharp": "47.0",
+     "model": "48.5"
+    }
+   ],
+   "offers": [
+    {
+     "market": "spreads",
+     "side": "Packers -3.5",
+     "price": -112,
+     "book": "DraftKings",
+     "win": 0.5474,
+     "ev": 0.0361,
+     "bet": true
+    },
+    {
+     "market": "spreads",
+     "side": "Panthers +3.5",
+     "price": -108,
+     "book": "DraftKings",
+     "win": 0.4526,
+     "ev": -0.1283,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Over 46.5",
+     "price": -122,
+     "book": "FanDuel",
+     "win": 0.5391,
+     "ev": -0.019,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Under 46.5",
+     "price": 102,
+     "book": "DraftKings",
+     "win": 0.4609,
+     "ev": -0.0689,
+     "bet": false
+    }
+   ],
+   "verdicts": [
+    {
+     "market": "Spread",
+     "bet": true,
+     "head": "Bet Packers -3.5 (-112) at DraftKings, $10.11",
+     "text": "The model has the Packers winning by 7.3, 3.8 more than the 3.5 they're giving. Where the edge comes from: their passing game (+2.5), home field (+1.9), Love over Young at quarterback (+1.7), their pass defense (+1.1)."
+    },
+    {
+     "market": "Total",
+     "bet": false,
+     "head": "Pass",
+     "text": "The best side is Over 46.5 at -1.9% EV; a bet needs 2%. Both defenses are missing regulars, which has historically favored the over (0.8 pts). Both offenses are missing regulars, which has historically favored the over (0.5 pts). Both teams are on a short week, which has historically favored the over (0.2 pts)."
+    }
+   ],
+   "note": "Team ratings plus the injury report have it Packers by 7.3; the model moves the sharp line a fifth of the way there (at most 1 point).",
+   "query": "Packers",
+   "run": "https://github.com/bviolino93/NFL-model/actions/runs/40957637521"
+  },
+  {
+   "league": "nfl",
+   "found": true,
+   "checked": "2026-10-27T03:31:41.110074+00:00",
+   "title": "Kansas City Chiefs @ Denver Broncos",
+   "away": "Kansas City Chiefs",
+   "home": "Denver Broncos",
+   "kickoff": "2026-11-01T21:25:00Z",
+   "lines": [
+    {
+     "market": "Spread",
+     "sharp": "Chiefs by 1.5",
+     "model": "Chiefs by 1.0"
+    },
+    {
+     "market": "Total",
+     "sharp": "40.5",
+     "model": "40.2"
+    }
+   ],
+   "offers": [
+    {
+     "market": "spreads",
+     "side": "Broncos +1.5",
+     "price": -110,
+     "book": "DraftKings",
+     "win": 0.512,
+     "ev": -0.0225,
+     "bet": false
+    },
+    {
+     "market": "spreads",
+     "side": "Chiefs -1.5",
+     "price": -108,
+     "book": "FanDuel",
+     "win": 0.488,
+     "ev": -0.0602,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Under 41.5",
+     "price": -115,
+     "book": "DraftKings",
+     "win": 0.5238,
+     "ev": -0.0207,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Over 40.5",
+     "price": -118,
+     "book": "FanDuel",
+     "win": 0.5091,
+     "ev": -0.0595,
+     "bet": false
+    }
+   ],
+   "verdicts": [
+    {
+     "market": "Spread",
+     "bet": false,
+     "head": "Pass",
+     "text": "The best side is Broncos +1.5 at -2.3% EV; a bet needs 2%."
+    },
+    {
+     "market": "Total",
+     "bet": false,
+     "head": "Pass",
+     "text": "The best side is Under 41.5 at -2.1% EV; a bet needs 2%. It's a division game, which has historically favored the under (0.3 pts)."
+    }
+   ],
+   "note": "Team ratings plus the injury report have it Broncos by 1.2; the model moves the sharp line a fifth of the way there (at most 1 point).",
+   "query": "Chiefs",
+   "run": "https://github.com/bviolino93/NFL-model/actions/runs/40444625441"
+  }
+ ]
+}
