@@ -542,6 +542,24 @@ def render_alert(bets: list[dict]) -> str:
     return "\n".join(out) + "\n"
 
 
+def render_dropped(bets: list[dict]) -> str:
+    """Alerted bets a later run no longer makes: skip them if not bet yet.
+    They stay in the record at the alerted price."""
+    one = len(bets) == 1
+    out = [f"**Skip {'this' if one else 'these'} if you haven't bet "
+           f"{'it' if one else 'them'}: {len(bets)} bet{'' if one else 's'} "
+           f"dropped off the board**\n"]
+    for b in bets:
+        p = pd.Series(b)
+        kick = pd.to_datetime(p.commence, utc=True).tz_convert(
+            "America/New_York").strftime("%a %-I:%M %p ET")
+        out.append(f"- ~~{_bet_label(p)} at {p.book}~~ · {p.away} @ {p.home}, {kick}")
+    out.append("\nThe line moved or the model no longer backs it. If you already "
+               "bet it, it still counts in the record at the price you got alerted.")
+    out.append("\nDashboard: https://bviolino93.github.io/NFL-model/")
+    return "\n".join(out) + "\n"
+
+
 def render_md(picks: pd.DataFrame, made: str) -> str:
     """Same content as the page, as Markdown: GitHub renders it on any
     phone with no hosting set up."""
@@ -609,7 +627,9 @@ def main():
     history = [b for b in ledger.load(a.history)
                if pd.Timestamp(b["commence"]) < end]
     seen = {ledger._key(b) for b in history}
+    was = ledger.on_board(history)
     history = ledger.merge(history, out, now, now.isoformat())
+    gone = ledger.dropped(was, history, now)
     try:
         history = ledger.grade(history, load_games(), ODDS_TEAM)
     except Exception as exc:  # scores can wait for the next run
@@ -633,10 +653,11 @@ def main():
     with open(a.json, "w") as fh:
         json.dump({"updated": made, "picks": out}, fh, indent=2, default=str)
     fresh = [p for p in out if ledger._key(p) not in seen]
-    if fresh:
+    note = "\n".join(r(b) for b, r in ((fresh, render_alert), (gone, render_dropped)) if b)
+    if note:
         with open(a.alert, "w") as fh:
-            fh.write(render_alert(fresh))
-    print(f"{len(out)} bets, {len(fresh)} new")
+            fh.write(note)
+    print(f"{len(out)} bets, {len(fresh)} new, {len(gone)} dropped")
     for p in out:
         print(f"  {p['pick']} {p['point']} ({p['price']}) at {p['book']}: "
               f"${p['stake']} | {p['win_chance']:.1%} | {p['why']}")
