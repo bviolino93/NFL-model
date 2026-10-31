@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJGaWVsZGxpbmUiPjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZmwtZyIgeDE9IjAiIHkxPSIxIiB4Mj0iMSIgeTI9IjAiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzIyYzM4ZSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzRmZDZhOCIvPjwvbGluZWFyR3JhZGllbnQ+PGxpbmVhckdyYWRpZW50IGlkPSJmbC1iIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMTcyNjNmIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMGUxYTJlIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3QgeD0iMSIgeT0iMSIgd2lkdGg9IjYyIiBoZWlnaHQ9IjYyIiByeD0iMTUiIGZpbGw9InVybCgjZmwtYikiIHN0cm9rZT0iIzI2MzU0ZCIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48cGF0aCBkPSJNMjAgMTQgVjUwIiBzdHJva2U9IiNlYWYwZjgiIHN0cm9rZS13aWR0aD0iNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PHBhdGggZD0iTTIwIDE2IEg0NiIgc3Ryb2tlPSIjZWFmMGY4IiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik0yMCAzMiBINDAiIHN0cm9rZT0iIzIyYzM4ZSIgc3Ryb2tlLXdpZHRoPSI1IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48cGF0aCBkPSJNMzAgNDQgVjUwIE0zOCA0NCBWNTAgTTQ2IDQ0IFY1MCIgc3Ryb2tlPSIjM2E0YTYzIiBzdHJva2Utd2lkdGg9IjIuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fieldline NFL Picks</title>
+<!-- Template for the picks dashboard. picks.py replaces the DATA line with
+     this run's bets, fair lines and graded history, so the page needs no
+     server or fetch and works from GitHub Pages or as a saved file. -->
+<style>
+:root{--bg:#0b1120;--panel:#131c31;--panel2:#1a2540;--fg:#e8eef8;--mute:#8b9bb4;
+--line:rgba(139,155,180,.18);--acc:#22c38e;--ok:#2fbf71;--bad:#ef5d5d;--warn:#f0b43c}
+@media (prefers-color-scheme: light){:root{--bg:#f3f5f9;--panel:#fff;--panel2:#eef2f8;
+--fg:#0f172a;--mute:#5b6b82;--line:rgba(15,23,42,.1);--acc:#0f9d6e;--ok:#16924f;--bad:#cf3a3a;--warn:#b7791f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 40px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 16px;margin-bottom:18px}
+h1{font-size:1.5rem;margin:0;letter-spacing:-.01em}
+h1 span{color:var(--mute);font-weight:500}
+.brand{display:flex;align-items:center;gap:10px}
+.mascot{width:40px;height:40px;flex:0 0 auto}
+.sub{color:var(--mute);font-size:.85rem}
+h2{font-size:1.05rem;margin:28px 0 10px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.kpi b{display:block;font-size:1.45rem;font-variant-numeric:tabular-nums;line-height:1.2}
+.kpi small{color:var(--mute);font-size:.78rem}
+.bar{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 4px}
+.chip{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:999px;
+padding:5px 12px;font:inherit;font-size:.85rem;cursor:pointer}
+.chip[aria-pressed=true]{background:var(--acc);border-color:var(--acc);color:#fff}
+.day{color:var(--mute);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;margin:18px 0 8px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.card .top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.bet{font-size:1.15rem;font-weight:700;line-height:1.25}
+.pill{font-size:.72rem;background:var(--panel2);border-radius:999px;padding:2px 9px;white-space:nowrap;color:var(--mute)}
+.game{color:var(--mute);font-size:.85rem}
+.nums{display:flex;gap:18px;font-variant-numeric:tabular-nums}
+.nums span{display:flex;flex-direction:column;font-size:.72rem;color:var(--mute)}
+.nums b{font-size:1rem;color:var(--fg)}
+.meter{height:6px;border-radius:3px;background:var(--panel2);overflow:hidden}
+.meter i{display:block;height:100%;background:var(--acc)}
+.why{font-size:.88rem;margin:0}
+.empty{background:var(--panel);border:1px dashed var(--line);border-radius:14px;padding:22px;color:var(--mute);text-align:center}
+.chart{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;margin-top:10px;position:relative}
+.chart svg{display:block;width:100%;height:auto}
+.tip{position:absolute;pointer-events:none;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+padding:6px 9px;font-size:.78rem;white-space:nowrap;display:none}
+.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;margin-top:10px}
+table{width:100%;border-collapse:collapse;font-size:.84rem;font-variant-numeric:tabular-nums}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--mute);font-weight:600;font-size:.75rem;text-transform:uppercase;letter-spacing:.04em}
+td.r,th.r{text-align:right}
+tr:last-child td{border-bottom:0}
+.win{color:var(--ok);font-weight:600}.loss{color:var(--bad);font-weight:600}.push,.open{color:var(--mute)}
+details{margin-top:28px}summary{cursor:pointer;font-weight:600}
+footer{color:var(--mute);font-size:.75rem;margin-top:32px}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div class="brand"><svg class="mascot" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Fieldline"><defs><linearGradient id="fl-g" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#22c38e"/><stop offset="1" stop-color="#4fd6a8"/></linearGradient><linearGradient id="fl-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#17263f"/><stop offset="1" stop-color="#0e1a2e"/></linearGradient></defs><rect x="1" y="1" width="62" height="62" rx="15" fill="url(#fl-b)" stroke="#26354d" stroke-width="1.5"/><path d="M20 14 V50" stroke="#eaf0f8" stroke-width="5" stroke-linecap="round"/><path d="M20 16 H46" stroke="#eaf0f8" stroke-width="5" stroke-linecap="round"/><path d="M20 32 H40" stroke="#22c38e" stroke-width="5" stroke-linecap="round"/><path d="M30 44 V50 M38 44 V50 M46 44 V50" stroke="#3a4a63" stroke-width="2.5" stroke-linecap="round"/></svg>
+    <h1>Fieldline <span>NFL</span></h1>
+  </div>
+  <div class="sub" id="updated"></div>
+</header>
+
+<section class="kpis" id="slate-kpis"></section>
+<div class="bar" id="filters"></div>
+<section id="bets"></section>
+
+<h2>Track record</h2>
+<section class="kpis" id="record-kpis"></section>
+<div class="chart" id="chart"><div class="tip" id="tip"></div></div>
+<div class="tablewrap"><table id="history"></table></div>
+
+<section id="paper-wrap">
+  <h2>Spread test (no money)</h2>
+  <p class="sub" id="paper-sub"></p>
+  <section class="kpis" id="paper-kpis"></section>
+  <div class="tablewrap"><table id="paper"></table></div>
+</section>
+
+<details>
+  <summary>Fair lines this run</summary>
+  <div class="tablewrap"><table id="fair"></table></div>
+</details>
+
+<footer>Stakes are quarter-Kelly on the bankroll shown, capped at 2% per bet and
+10% per slate. Win chances are model estimates, not guarantees. 21+ where legal;
+1-800-GAMBLER.</footer>
+</main>
+
+<script id="data" type="application/json">{"updated": "Sat Oct 31, 14:27 UTC", "bankroll": 1000.0, "picks": [{"away": "Philadelphia Eagles", "home": "Washington Commanders", "commence": "2026-11-02T01:20:00Z", "market": "spreads", "pick": "Philadelphia Eagles", "point": 5.5, "price": -105, "book": "FanDuel", "stake": 18.71, "win_chance": 0.5487077534791253, "ev": 0.07128656631638741, "why": "The model has the Eagles losing by only 0.5, and they're getting 5.5, so they cover unless they lose by 6 or more (5.0 pts of room). Where the edge comes from: their pass defense (+3.1), their run defense (+0.7). Working against it: the Commanders' home field (1.9), Daniels at quarterback (1.3).", "injuries": [{"team": "Eagles", "name": "Jihaad Campbell", "pos": "LB", "status": "Out", "pts": -0.7}, {"team": "Eagles", "name": "Dontayvion Wicks", "pos": "WR", "status": "Out", "pts": -0.5}, {"team": "Eagles", "name": "Dameon Pierce", "pos": "RB", "status": "IR", "pts": -0.5}, {"team": "Commanders", "name": "Jacory Croskey-Merritt", "pos": "RB", "status": "IR", "pts": -0.3}, {"team": "Commanders", "name": "Charles Omenihu", "pos": "DE", "status": "Out", "pts": -0.3}, {"team": "Commanders", "name": "Leo Chenal", "pos": "LB", "status": "IR", "pts": -0.2}, {"team": "Commanders", "name": "Javon Kinlaw", "pos": "DT", "status": "Questionable", "pts": -0.2}, {"team": "Commanders", "name": "Lucas Patrick", "pos": "G", "status": "Questionable", "pts": -0.1}]}, {"away": "Philadelphia Eagles", "home": "Washington Commanders", "commence": "2026-11-02T01:20:00Z", "market": "h2h", "pick": "Philadelphia Eagles", "point": null, "price": 215, "book": "FanDuel", "stake": 10.0, "win_chance": 0.3545779292498975, "ev": 0.11451853227882547, "why": "FanDuel pays +215 on the Eagles, which needs a 32% win chance; we make it 35%. The market has them as 6.0-point underdogs; the model has them losing by only 0.5. Where the edge comes from: their pass defense (+3.1), their run defense (+0.7). Working against it: the Commanders' home field (1.9), Daniels at quarterback (1.3).", "injuries": [{"team": "Eagles", "name": "Jihaad Campbell", "pos": "LB", "status": "Out", "pts": -0.7}, {"team": "Eagles", "name": "Dontayvion Wicks", "pos": "WR", "status": "Out", "pts": -0.5}, {"team": "Eagles", "name": "Dameon Pierce", "pos": "RB", "status": "IR", "pts": -0.5}, {"team": "Commanders", "name": "Jacory Croskey-Merritt", "pos": "RB", "status": "IR", "pts": -0.3}, {"team": "Commanders", "name": "Charles Omenihu", "pos": "DE", "status": "Out", "pts": -0.3}, {"team": "Commanders", "name": "Leo Chenal", "pos": "LB", "status": "IR", "pts": -0.2}, {"team": "Commanders", "name": "Javon Kinlaw", "pos": "DT", "status": "Questionable", "pts": -0.2}, {"team": "Commanders", "name": "Lucas Patrick", "pos": "G", "status": "Questionable", "pts": -0.1}]}], "fair": [{"away": "Arizona Cardinals", "home": "Dallas Cowboys", "market_margin": 7.5, "margin": 7.069183173077848, "market_total": 54.75, "total": 55.40464533693281}, {"away": "Atlanta Falcons", "home": "Tampa Bay Buccaneers", "market_margin": 2.75, "margin": 2.524100306734854, "market_total": 44.0, "total": 43.09463842010596}, {"away": "Baltimore Ravens", "home": "Buffalo Bills", "market_margin": 3.5, "margin": 3.754687880283966, "market_total": 54.5, "total": 53.70179943832267}, {"away": "Tennessee Titans", "home": "Cincinnati Bengals", "market_margin": 12.5, "margin": 12.914572945563737, "market_total": 46.75, "total": 47.00541574748277}, {"away": "Cleveland Browns", "home": "Pittsburgh Steelers", "market_margin": 3.75, "margin": 3.75, "market_total": 38.5, "total": 38.28841678608411}, {"away": "Minnesota Vikings", "home": "Detroit Lions", "market_margin": 3.25, "margin": 3.180227041085868, "market_total": 46.0, "total": 45.83285178731496}, {"away": "Indianapolis Colts", "home": "Jacksonville Jaguars", "market_margin": 10.0, "margin": 9.693561452445353, "market_total": 46.75, "total": 45.87192}, {"away": "Las Vegas Raiders", "home": "New York Jets", "market_margin": 2.0, "margin": 1.3961500913653566, "market_total": 46.25, "total": 46.709993688435524}, {"away": "Los Angeles Chargers", "home": "Los Angeles Rams", "market_margin": 7.0, "margin": 8.0, "market_total": 45.25, "total": 45.386451969002664}, {"away": "Kansas City Chiefs", "home": "Denver Broncos", "market_margin": -1.0, "margin": -0.7386093638759053, "market_total": 39.75, "total": 39.30997534947733}, {"away": "New England Patriots", "home": "Miami Dolphins", "market_margin": -6.75, "margin": -6.243992518558441, "market_total": 43.75, "total": 42.81704}, {"away": "Philadelphia Eagles", "home": "Washington Commanders", "market_margin": 6.0, "margin": 5.0, "market_total": 39.5, "total": 39.5}, {"away": "Chicago Bears", "home": "Seattle Seahawks", "market_margin": 3.5, "margin": 3.4291693108248875, "market_total": 46.75, "total": 46.75}], "history": {"summary": {"wins": 5, "losses": 2, "pushes": 0, "staked": 88.5, "profit": 14.13, "roi": 0.1597}, "bets": [{"away": "Cincinnati Bengals", "home": "Baltimore Ravens", "commence": "2026-10-25T17:00:00Z", "market": "spreads", "pick": "Baltimore Ravens", "point": 2.5, "price": -102, "book": "FanDuel", "stake": 14.87, "win_chance": 0.5343959731543624, "ev": 0.05831359389393331, "why": "The model has the Ravens winning by 2.4, and they're getting 2.5, so they cover unless they lose by 3 or more (4.9 pts of room). Where the edge comes from: home field (+2.1), their run defense (+1.0), their pass defense (+0.8), their passing game (+0.6). Working against it: Burrow at quarterback (2.1).", "first_seen": "2026-10-25T14:16:40.303759+00:00", "last_seen": "2026-10-25T14:23:18.119294+00:00", "result": "loss", "profit": -14.87, "pulled": false, "final": "35-13"}, {"away": "New York Giants", "home": "Houston Texans", "commence": "2026-10-25T17:00:00Z", "market": "totals", "pick": "Over", "point": 42.5, "price": -112, "book": "DraftKings", "stake": 14.22, "win_chance": 0.5551330798479087, "ev": 0.05078761542639865, "why": "Both defenses are missing regulars, which has historically favored the over (1.5 pts). Both offenses are missing regulars, which has historically favored the over (0.1 pts).", "first_seen": "2026-10-25T13:08:36.320628+00:00", "last_seen": "2026-10-25T14:23:18.119294+00:00", "result": "win", "profit": 12.7, "pulled": false, "final": "27-21"}, {"away": "Miami Dolphins", "home": "New York Jets", "commence": "2026-10-25T17:00:00Z", "market": "spreads", "pick": "Miami Dolphins", "point": 3.5, "price": -105, "book": "DraftKings", "stake": 11.55, "win_chance": 0.5347349177330896, "ev": 0.04400626795507956, "why": "The model has the Dolphins losing by only 1.0, and they're getting 3.5, so they cover unless they lose by 4 or more (2.5 pts of room). Where the edge comes from: their running game (+0.7), Willis over Smith at quarterback (+0.7), their passing game (+0.7). Working against it: the Jets' home field (2.1).", "first_seen": "2026-10-25T14:16:40.303759+00:00", "last_seen": "2026-10-25T14:23:18.119294+00:00", "result": "win", "profit": 11.0, "pulled": false, "final": "28-25"}, {"away": "Denver Broncos", "home": "Arizona Cardinals", "commence": "2026-10-25T20:05:00Z", "market": "totals", "pick": "Over", "point": 43.5, "price": -110, "book": "DraftKings", "stake": 9.69, "win_chance": 0.5422715627668659, "ev": 0.03524571073674404, "why": "Both defenses are missing regulars, which has historically favored the over (0.9 pts). Both offenses are missing regulars, which has historically favored the over (0.2 pts).", "first_seen": "2026-10-25T13:08:36.320628+00:00", "last_seen": "2026-10-25T18:26:10.629478+00:00", "result": "win", "profit": 8.81, "pulled": false, "final": "30-16"}, {"away": "Green Bay Packers", "home": "Detroit Lions", "commence": "2026-10-25T20:25:00Z", "market": "spreads", "pick": "Green Bay Packers", "point": 3.5, "price": -108, "book": "FanDuel", "stake": 8.06, "win_chance": 0.5347349177330896, "ev": 0.02985984156002436, "why": "The model has the Packers losing by only 1.7, and they're getting 3.5, so they cover unless they lose by 4 or more (1.8 pts of room). Where the edge comes from: their pass defense (+0.9). Working against it: the Lions' home field (2.1).", "first_seen": "2026-10-25T18:13:48.818383+00:00", "last_seen": "2026-10-25T18:26:10.629478+00:00", "result": "win", "profit": 7.46, "pulled": false, "final": "17-20"}, {"away": "Dallas Cowboys", "home": "Philadelphia Eagles", "commence": "2026-10-27T00:15:00Z", "market": "spreads", "pick": "Philadelphia Eagles", "point": 4.5, "price": -115, "book": "DraftKings", "stake": 20.0, "win_chance": 0.5720930232558139, "ev": 0.06956521739130422, "why": "The model has the Eagles winning by 2.8, and they're getting 4.5, so they cover unless they lose by 5 or more (7.3 pts of room). Where the edge comes from: their pass defense (+5.5), home field (+2.1), their run defense (+1.2). Working against it: Prescott over McKee at quarterback (2.2), the Cowboys' passing game (1.8).", "injuries": [{"team": "Cowboys", "name": "Dee Winters", "pos": "LB", "status": "Out", "pts": -0.5}, {"team": "Eagles", "name": "Jalen Hurts", "pos": "QB", "status": "IR", "pts": null, "note": "McKee starting"}, {"team": "Eagles", "name": "Dontayvion Wicks", "pos": "WR", "status": "Out", "pts": -0.6}, {"team": "Eagles", "name": "Nolan Smith", "pos": "LB", "status": "Out", "pts": -0.6}, {"team": "Eagles", "name": "Michael Carter II", "pos": "CB", "status": "Out", "pts": -0.4}, {"team": "Eagles", "name": "DeVonta Smith", "pos": "WR", "status": "Out", "pts": -0.3}, {"team": "Eagles", "name": "Jalyx Hunt", "pos": "LB", "status": "Questionable", "pts": -0.1}], "first_seen": "2026-10-25T14:16:40.303759+00:00", "last_seen": "2026-10-26T23:36:15.004389+00:00", "result": "loss", "profit": -20.0, "pulled": false, "final": "38-21"}, {"away": "Carolina Panthers", "home": "Green Bay Packers", "commence": "2026-10-30T00:15:00Z", "market": "spreads", "pick": "Green Bay Packers", "point": -3.5, "price": -112, "book": "DraftKings", "stake": 10.11, "win_chance": 0.5473843821076573, "ev": 0.0361204375609227, "why": "The model has the Packers winning by 7.3, 3.8 more than the 3.5 they're giving. Where the edge comes from: their passing game (+2.5), home field (+1.9), Love over Young at quarterback (+1.7), their pass defense (+1.1).", "injuries": [{"team": "Panthers", "name": "Akayleb Evans", "pos": "CB", "status": "Out", "pts": -0.8}, {"team": "Panthers", "name": "Damien Lewis", "pos": "G", "status": "Out", "pts": -0.5}, {"team": "Panthers", "name": "Jaelan Phillips", "pos": "LB", "status": "Out", "pts": -0.4}, {"team": "Panthers", "name": "Taylor Moton", "pos": "OL", "status": "IR", "pts": -0.3}, {"team": "Packers", "name": "Travis Glover", "pos": "G", "status": "Out", "pts": -0.8}, {"team": "Packers", "name": "Zaire Franklin", "pos": "LB", "status": "Out", "pts": -0.7}, {"team": "Packers", "name": "Sean Rhyan", "pos": "C", "status": "Out", "pts": -0.6}, {"team": "Packers", "name": "Matthew Golden", "pos": "WR", "status": "Questionable", "pts": -0.2}, {"team": "Packers", "name": "Brenton Cox Jr.", "pos": "LB", "status": "Questionable", "pts": -0.1}, {"team": "Packers", "name": "Devonte Wyatt", "pos": "DT", "status": "Questionable", "pts": -0.1}], "first_seen": "2026-10-29T21:27:39.844969+00:00", "first_point": -3.5, "first_price": -112, "last_seen": "2026-10-29T21:27:39.844969+00:00", "result": "win", "profit": 9.03, "pulled": false, "final": "19-27"}, {"away": "Arizona Cardinals", "home": "Dallas Cowboys", "commence": "2026-11-01T18:00:00Z", "market": "h2h", "pick": "Arizona Cardinals", "point": null, "price": 280, "book": "FanDuel", "stake": 10.0, "win_chance": 0.2955843290008981, "ev": 0.1210691717323541, "why": "FanDuel pays +280 on the Cardinals, which needs a 26% win chance; we make it 30%. The market has them as 7.5-point underdogs; the model has them losing by only 4.2. Where the edge comes from: their pass defense (+1.5), their run defense (+1.2). Working against it: Prescott over Brissett at quarterback (2.7), the Cowboys' home field (1.9). Also, the sharp books' moneylines make the Cardinals worth about +275, so FanDuel is paying more than the market thinks they are worth.", "injuries": [{"team": "Cardinals", "name": "Jalen Brooks", "pos": "WR", "status": "IR", "pts": -0.3}, {"team": "Cowboys", "name": "Dee Winters", "pos": "LB", "status": "Out", "pts": -0.5}], "first_seen": "2026-10-29T21:27:39.844969+00:00", "first_point": null, "first_price": 280, "last_seen": "2026-10-29T21:27:39.844969+00:00", "result": null, "profit": null, "pulled": false, "on_board": false}, {"away": "Indianapolis Colts", "home": "Jacksonville Jaguars", "commence": "2026-11-01T18:00:00Z", "market": "totals", "pick": "Under", "point": 46.5, "price": -110, "book": "DraftKings", "stake": 10.23, "win_chance": 0.543301258327165, "ev": 0.0372114931700423, "why": "It's a division game, which has historically favored the under (0.3 pts). 14 mph wind is forecast, which keeps scoring down (1.1 pts).", "injuries": [{"team": "Jaguars", "name": "Montaric Brown", "pos": "CB", "status": "Out", "pts": -0.3}], "first_seen": "2026-10-27T03:38:41.471137+00:00", "first_point": 46.5, "first_price": -105, "last_seen": "2026-10-29T21:27:39.844969+00:00", "result": null, "profit": null, "pulled": false, "on_board": false}, {"away": "Las Vegas Raiders", "home": "New York Jets", "commence": "2026-11-01T18:00:00Z", "market": "spreads", "pick": "Las Vegas Raiders", "point": 1.5, "price": -110, "book": "DraftKings", "stake": 6.68, "win_chance": 0.5365313653136532, "ev": 0.02428715196242881, "why": "The model has the Raiders winning by 0.1, and they're getting 1.5, so they cover unless they lose by 2 or more (1.6 pts of room). Where the edge comes from: Cousins over Smith at quarterback (+2.5), their pass defense (+0.8). Working against it: the Jets' home field (1.9).", "injuries": [{"team": "Raiders", "name": "Quay Walker", "pos": "LB", "status": "Questionable", "pts": -0.2}, {"team": "Jets", "name": "Joseph Ossai", "pos": "DE", "status": "Out", "pts": -0.3}], "first_seen": "2026-10-27T03:38:41.471137+00:00", "first_point": 1.5, "first_price": -120, "last_seen": "2026-10-29T21:27:39.844969+00:00", "result": null, "profit": null, "pulled": false, "on_board": false}, {"away": "Atlanta Falcons", "home": "Tampa Bay Buccaneers", "commence": "2026-11-01T18:00:00Z", "market": "totals", "pick": "Under", "point": 44.5, "price": -112, "book": "DraftKings", "stake": 18.61, "win_chance": 0.5634110787172011, "ev": 0.06645668471470212, "why": "It's a division game, which has historically favored the under (0.3 pts). 15 mph wind is forecast, which keeps scoring down (1.2 pts).", "injuries": [{"team": "Falcons", "name": "Divine Deablo", "pos": "LB", "status": "Out", "pts": -0.7}, {"team": "Falcons", "name": "Billy Bowman Jr.", "pos": "CB", "status": "Out", "pts": -0.4}, {"team": "Falcons", "name": "Brian Robinson", "pos": "RB", "status": "Out", "pts": -0.2}, {"team": "Falcons", "name": "C.J. Henderson", "pos": "CB", "status": "Questionable", "pts": -0.1}, {"team": "Falcons", "name": "Avieon Terrell", "pos": "CB", "status": "Questionable", "pts": -0.1}, {"team": "Falcons", "name": "Gervon Dexter Sr.", "pos": "DT", "status": "Questionable", "pts": -0.1}, {"team": "Buccaneers", "name": "Luke Goedeke", "pos": "T", "status": "Out", "pts": -0.8}, {"team": "Buccaneers", "name": "Emeka Egbuka", "pos": "WR", "status": "Out", "pts": -0.7}, {"team": "Buccaneers", "name": "Antoine Winfield Jr.", "pos": "S", "status": "Out", "pts": -0.5}], "first_seen": "2026-10-27T03:38:41.471137+00:00", "first_point": 46.5, "first_price": -112, "last_seen": "2026-10-29T21:27:39.844969+00:00", "result": null, "profit": null, "pulled": false, "on_board": false}, {"away": "New England Patriots", "home": "Miami Dolphins", "commence": "2026-11-01T21:25:00Z", "market": "totals", "pick": "Under", "point": 43.5, "price": -112, "book": "DraftKings", "stake": 11.26, "win_chance": 0.5495412844036698, "ev": 0.040203145478374946, "why": "It's a division game, which has historically favored the under (0.3 pts). 14 mph wind is forecast, which keeps scoring down (1.1 pts).", "injuries": [{"team": "Dolphins", "name": "Willie Gay Jr.", "pos": "LB", "status": "Questionable", "pts": -0.1}], "first_seen": "2026-10-27T03:38:41.471137+00:00", "first_point": 44.5, "first_price": -110, "last_seen": "2026-10-29T21:27:39.844969+00:00", "result": null, "profit": null, "pulled": false, "on_board": false}, {"away": "Philadelphia Eagles", "home": "Washington Commanders", "commence": "2026-11-02T01:20:00Z", "market": "spreads", "pick": "Philadelphia Eagles", "point": 5.5, "price": 100, "book": "FanDuel", "stake": 9.4, "win_chance": 0.5188027628549501, "ev": 0.03760552570990017, "why": "The model has the Eagles winning by 0.6, and they're getting 5.5, so they cover unless they lose by 6 or more (6.1 pts of room). Where the edge comes from: their pass defense (+3.1), the injury report (+0.8), their run defense (+0.7). Working against it: the Commanders' home field (1.9), Daniels at quarterback (1.3).", "injuries": [{"team": "Eagles", "name": "Dameon Pierce", "pos": "RB", "status": "IR", "pts": -0.5}, {"team": "Commanders", "name": "Jacory Croskey-Merritt", "pos": "RB", "status": "IR", "pts": -0.3}, {"team": "Commanders", "name": "Charles Omenihu", "pos": "DE", "status": "Out", "pts": -0.3}, {"team": "Commanders", "name": "Leo Chenal", "pos": "LB", "status": "IR", "pts": -0.2}, {"team": "Commanders", "name": "Javon Kinlaw", "pos": "DT", "status": "Questionable", "pts": -0.2}, {"team": "Commanders", "name": "Lucas Patrick", "pos": "G", "status": "Questionable", "pts": -0.1}], "first_seen": "2026-10-29T21:27:39.844969+00:00", "first_point": 5.5, "first_price": 100, "last_seen": "2026-10-31T14:27:52.996368+00:00", "result": null, "profit": null, "pulled": false, "on_board": true, "now_point": 5.5, "now_price": -105}, {"away": "Philadelphia Eagles", "home": "Washington Commanders", "commence": "2026-11-02T01:20:00Z", "market": "h2h", "pick": "Philadelphia Eagles", "point": null, "price": 220, "book": "FanDuel", "stake": 4.9, "win_chance": 0.3262338187527408, "ev": 0.04310500780599302, "why": "FanDuel pays +220 on the Eagles, which needs a 31% win chance; we make it 33%. The market has them as 6.5-point underdogs, but the model has the Eagles winning by 0.6. Where the edge comes from: their pass defense (+3.1), the injury report (+0.8), their run defense (+0.7). Working against it: the Commanders' home field (1.9), Daniels at quarterback (1.3).", "injuries": [{"team": "Eagles", "name": "Dameon Pierce", "pos": "RB", "status": "IR", "pts": -0.5}, {"team": "Commanders", "name": "Jacory Croskey-Merritt", "pos": "RB", "status": "IR", "pts": -0.3}, {"team": "Commanders", "name": "Charles Omenihu", "pos": "DE", "status": "Out", "pts": -0.3}, {"team": "Commanders", "name": "Leo Chenal", "pos": "LB", "status": "IR", "pts": -0.2}, {"team": "Commanders", "name": "Javon Kinlaw", "pos": "DT", "status": "Questionable", "pts": -0.2}, {"team": "Commanders", "name": "Lucas Patrick", "pos": "G", "status": "Questionable", "pts": -0.1}], "first_seen": "2026-10-29T21:27:39.844969+00:00", "first_point": null, "first_price": 220, "last_seen": "2026-10-31T14:27:52.996368+00:00", "result": null, "profit": null, "pulled": false, "on_board": true, "now_point": null, "now_price": 215}]}, "paper": {"summary": {"bets": 8, "wins": 1, "losses": 0, "pushes": 0, "win_rate": 1.0, "avg_clv": 0.5, "beat_close": 1.0}, "gap": 3.0, "bets": [{"key": "Carolina Panthers|Green Bay Packers|2026-10-30", "away": "Carolina Panthers", "home": "Green Bay Packers", "commence": "2026-10-30T00:15:00Z", "logged": "2026-10-25T13:49:02.497142+00:00", "side": "Green Bay Packers", "point": -3.0, "model_margin": 6.43, "ratings": 6.71, "injuries": -0.28, "market_margin": 3.0, "gap": 3.43, "close": 3.5, "clv": 0.5, "result": "win", "final": "19-27"}, {"key": "Los Angeles Chargers|Los Angeles Rams|2026-11-01", "away": "Los Angeles Chargers", "home": "Los Angeles Rams", "commence": "2026-11-01T21:05:00Z", "logged": "2026-10-25T13:49:02.497142+00:00", "side": "Los Angeles Rams", "point": -7.0, "model_margin": 10.88, "ratings": 9.41, "injuries": 1.47, "market_margin": 7.0, "gap": 3.88, "close": 6.5, "clv": -0.5, "result": null, "final": null}, {"key": "New England Patriots|Miami Dolphins|2026-11-01", "away": "New England Patriots", "home": "Miami Dolphins", "commence": "2026-11-01T21:25:00Z", "logged": "2026-10-25T13:49:02.497142+00:00", "side": "Miami Dolphins", "point": 8.0, "model_margin": -2.86, "ratings": -5.04, "injuries": 2.18, "market_margin": -8.0, "gap": 5.14, "close": -7.0, "clv": 1.0, "result": null, "final": null}, {"key": "Philadelphia Eagles|Washington Commanders|2026-11-02", "away": "Philadelphia Eagles", "home": "Washington Commanders", "commence": "2026-11-02T01:20:00Z", "logged": "2026-10-25T13:49:02.497142+00:00", "side": "Philadelphia Eagles", "point": 4.0, "model_margin": 0.57, "ratings": -0.39, "injuries": 0.96, "market_margin": 4.0, "gap": -3.43, "close": 6.0, "clv": -2.0, "result": null, "final": null}, {"key": "Tennessee Titans|Cincinnati Bengals|2026-11-01", "away": "Tennessee Titans", "home": "Cincinnati Bengals", "commence": "2026-11-01T18:00:00Z", "logged": "2026-10-26T19:02:37.634169+00:00", "side": "Cincinnati Bengals", "point": -10.0, "model_margin": 13.93, "ratings": 13.75, "injuries": 0.18, "market_margin": 10.0, "gap": 3.93, "close": 12.5, "clv": 2.5, "result": null, "final": null}, {"key": "Dallas Cowboys|Indianapolis Colts|2026-11-08", "away": "Dallas Cowboys", "home": "Indianapolis Colts", "commence": "2026-11-08T18:00:00Z", "logged": "2026-10-29T21:27:39.844969+00:00", "side": "Indianapolis Colts", "point": 4.0, "model_margin": 0.36, "ratings": 0.06, "injuries": 0.3, "market_margin": -4.0, "gap": 4.36, "close": -4.5, "clv": -0.5, "result": null, "final": null}, {"key": "Detroit Lions|Miami Dolphins|2026-11-08", "away": "Detroit Lions", "home": "Miami Dolphins", "commence": "2026-11-08T18:00:00Z", "logged": "2026-10-29T21:27:39.844969+00:00", "side": "Miami Dolphins", "point": 7.5, "model_margin": -2.14, "ratings": -3.57, "injuries": 1.43, "market_margin": -7.5, "gap": 5.36, "close": -7.0, "clv": 0.5, "result": null, "final": null}, {"key": "New York Giants|Philadelphia Eagles|2026-11-08", "away": "New York Giants", "home": "Philadelphia Eagles", "commence": "2026-11-08T18:00:00Z", "logged": "2026-10-29T21:27:39.844969+00:00", "side": "Philadelphia Eagles", "point": 1.0, "model_margin": 6.43, "ratings": 3.9, "injuries": 2.53, "market_margin": -1.0, "gap": 7.43, "close": -1.5, "clv": -0.5, "result": null, "final": null}]}}</script>
+<script>
+(function () {
+  const D = JSON.parse(document.getElementById("data").textContent);
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+  const money = (x) => (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString(undefined,
+    {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const signed = (x) => (x > 0 ? "+" : "") + money(x);
+  const pct = (x, d = 1) => (x * 100).toFixed(d) + "%";
+  const odds = (p) => (p > 0 ? "+" : "") + Math.round(p);
+  const ET = {timeZone: "America/New_York"};
+  const kick = (s) => new Date(s).toLocaleString("en-US",
+    {...ET, weekday: "short", hour: "numeric", minute: "2-digit"}) + " ET";
+  const dayOf = (s) => new Date(s).toLocaleDateString("en-US",
+    {...ET, weekday: "long", month: "short", day: "numeric"});
+  const short = (team) => team.split(" ").slice(-1)[0];
+  const label = (b) => {
+    if (b.market === "totals") return `${b.pick} ${b.point}`;
+    if (b.market === "h2h") return `${b.pick} to win`;
+    const pt = b.point > 0 ? "+" + b.point : String(b.point);
+    return `${b.pick} ${pt}`;
+  };
+  const kpi = (box, value, name, cls) => {
+    const k = el("div", "kpi");
+    const v = el("b", cls || "", value);
+    k.append(v, el("small", "", name));
+    box.append(k);
+  };
+
+  $("updated").textContent = `Updated ${D.updated} · $${D.bankroll.toLocaleString()} bankroll`;
+
+  // ---- this slate
+  const picks = D.picks;
+  const slate = $("slate-kpis");
+  const stake = picks.reduce((s, b) => s + b.stake, 0);
+  kpi(slate, String(picks.length), picks.length === 1 ? "bet" : "bets");
+  kpi(slate, money(stake), "total stake");
+  kpi(slate, picks.length ? pct(picks.reduce((s, b) => s + b.win_chance, 0) / picks.length) : "—",
+      "average win chance");
+  kpi(slate, picks.length ? signed(picks.reduce((s, b) => s + b.stake * b.ev, 0)) : "—",
+      "expected profit");
+
+  const markets = {all: "All", totals: "Totals", spreads: "Spreads", h2h: "Underdogs"};
+  const present = new Set(picks.map((b) => b.market));
+  let filter = "all";
+  const bar = $("filters");
+  Object.entries(markets).forEach(([key, name]) => {
+    if (key !== "all" && !present.has(key)) return;
+    const c = el("button", "chip", name);
+    c.type = "button";
+    c.setAttribute("aria-pressed", String(key === filter));
+    c.addEventListener("click", () => {
+      filter = key;
+      bar.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === c)));
+      drawBets();
+    });
+    bar.append(c);
+  });
+  if (present.size < 2) bar.hidden = true;
+
+  function drawBets() {
+    const box = $("bets");
+    box.replaceChildren();
+    const shown = picks.filter((b) => filter === "all" || b.market === filter)
+      .sort((a, b) => a.commence.localeCompare(b.commence) || b.ev - a.ev);
+    if (!shown.length) {
+      box.append(el("div", "empty", "No bets right now. Nothing beats the sharp market by " +
+        "enough, which is the usual answer and the right one."));
+      return;
+    }
+    let day = null, grid = null;
+    shown.forEach((b) => {
+      const d = dayOf(b.commence);
+      if (d !== day) {
+        day = d;
+        box.append(el("div", "day", d));
+        grid = el("div", "cards");
+        box.append(grid);
+      }
+      const c = el("article", "card");
+      const top = el("div", "top");
+      const t = el("div");
+      t.append(el("div", "bet", `${label(b)} (${odds(b.price)})`),
+               el("div", "game", `${short(b.away)} @ ${short(b.home)} · ${kick(b.commence)}`));
+      top.append(t, el("span", "pill", b.book));
+      const nums = el("div", "nums");
+      [[money(b.stake), "stake"], [pct(b.win_chance), "win chance"], [pct(b.ev), "edge"]]
+        .forEach(([v, n]) => {
+          const s = el("span");
+          s.append(el("b", "", v), document.createTextNode(n));
+          nums.append(s);
+        });
+      const m = el("div", "meter");
+      const fill = el("i");
+      fill.style.width = pct(b.win_chance);
+      m.append(fill);
+      c.append(top, nums, m, el("p", "why", b.why));
+      grid.append(c);
+    });
+  }
+  drawBets();
+
+  // ---- track record
+  const H = D.history.bets.filter((b) => !b.pulled);
+  const pulled = D.history.bets.filter((b) => b.pulled);
+  const S = D.history.summary;
+  const rec = $("record-kpis");
+  const graded = H.filter((b) => b.result).sort((a, b) => a.commence.localeCompare(b.commence));
+  kpi(rec, `${S.wins}-${S.losses}${S.pushes ? "-" + S.pushes : ""}`, "record (W-L-P)");
+  kpi(rec, graded.length ? signed(S.profit) : "—", "profit",
+      graded.length ? (S.profit >= 0 ? "win" : "loss") : "");
+  kpi(rec, S.roi == null ? "—" : (S.roi > 0 ? "+" : "") + pct(S.roi), "return on stakes");
+  kpi(rec, String(H.filter((b) => !b.result).length), "bets waiting on a result");
+
+  const chart = $("chart");
+  function drawChart() {
+    chart.querySelectorAll("svg,.empty").forEach((n) => n.remove());
+    if (graded.length < 2) {
+      chart.append(el("div", "empty", graded.length
+        ? "The profit chart starts after the second graded bet."
+        : "Bets are graded automatically once final scores are posted."));
+      return;
+    }
+    let run = 0;
+    const pts = [{i: 0, y: 0}].concat(graded.map((b, i) => ({i: i + 1, y: (run += b.profit), b})));
+    const W = Math.max(300, chart.clientWidth - 24), Hh = 200, P = {l: 52, r: 10, t: 10, b: 22};
+    const ys = pts.map((p) => p.y), lo = Math.min(0, ...ys), hi = Math.max(0, ...ys);
+    const pad = (hi - lo) * 0.1 || 10;
+    const x = (i) => P.l + (i / (pts.length - 1)) * (W - P.l - P.r);
+    const y = (v) => P.t + (1 - (v - (lo - pad)) / (hi - lo + 2 * pad)) * (Hh - P.t - P.b);
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${Hh}`);
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "Cumulative profit by bet");
+    const add = (tag, attrs) => {
+      const n = document.createElementNS(NS, tag);
+      Object.entries(attrs).forEach(([k, v]) => n.setAttribute(k, v));
+      svg.append(n);
+      return n;
+    };
+    const cs = getComputedStyle(document.documentElement);
+    const col = (v) => cs.getPropertyValue(v).trim();
+    [lo - pad, 0, hi + pad].forEach((v) => {
+      add("line", {x1: P.l, x2: W - P.r, y1: y(v), y2: y(v), stroke: col("--line")});
+      add("text", {x: P.l - 6, y: y(v) + 4, "text-anchor": "end", "font-size": 11,
+                   fill: col("--mute")}).textContent = money(Math.round(v));
+    });
+    add("text", {x: W - P.r, y: Hh - 4, "text-anchor": "end", "font-size": 11,
+                 fill: col("--mute")}).textContent = `${graded.length} graded bets`;
+    const last = pts[pts.length - 1].y;
+    add("path", {d: pts.map((p, k) => `${k ? "L" : "M"}${x(p.i)},${y(p.y)}`).join(""),
+                 fill: "none", stroke: col(last >= 0 ? "--ok" : "--bad"), "stroke-width": 2.5,
+                 "stroke-linejoin": "round"});
+    const dot = add("circle", {r: 4, fill: col("--acc"), visibility: "hidden"});
+    const tip = $("tip");
+    svg.addEventListener("pointermove", (e) => {
+      const r = svg.getBoundingClientRect();
+      const i = Math.round(((e.clientX - r.left) * (W / r.width) - P.l) / (W - P.l - P.r) * (pts.length - 1));
+      const p = pts[Math.max(1, Math.min(pts.length - 1, i))];
+      dot.setAttribute("cx", x(p.i)); dot.setAttribute("cy", y(p.y));
+      dot.setAttribute("visibility", "visible");
+      tip.textContent = `${label(p.b)} · ${p.b.result} ${signed(p.b.profit)} · total ${signed(p.y)}`;
+      tip.style.display = "block";
+      const left = (x(p.i) / W) * r.width + 12;
+      tip.style.left = Math.min(left, chart.clientWidth - tip.offsetWidth - 8) + "px";
+      tip.style.top = (y(p.y) / Hh) * r.height - 10 + "px";
+    });
+    svg.addEventListener("pointerleave", () => {
+      tip.style.display = "none";
+      dot.setAttribute("visibility", "hidden");
+    });
+    chart.append(svg);
+  }
+  drawChart();
+  let wait;
+  window.addEventListener("resize", () => { clearTimeout(wait); wait = setTimeout(drawChart, 150); });
+
+  const table = (id, heads, rows) => {
+    const t = $(id);
+    const hr = el("tr");
+    heads.forEach(([h, r]) => hr.append(el("th", r ? "r" : "", h)));
+    t.append(hr);
+    rows.forEach((cells) => {
+      const tr = el("tr");
+      cells.forEach(([v, cls]) => tr.append(el("td", cls || "", v)));
+      t.append(tr);
+    });
+  };
+  const past = H.concat(pulled).sort((a, b) => b.commence.localeCompare(a.commence));
+  if (past.length) {
+    table("history", [["Date"], ["Game"], ["Bet"], ["Book"], ["Stake", 1], ["Win %", 1],
+                      ["Final"], ["Result"], ["Profit", 1]],
+      past.map((b) => [
+        [new Date(b.commence).toLocaleDateString("en-US", {...ET, month: "short", day: "numeric"})],
+        [`${short(b.away)} @ ${short(b.home)}`],
+        [`${label(b)} (${odds(b.price)})`], [b.book],
+        [money(b.stake), "r"], [pct(b.win_chance, 0), "r"],
+        [b.final || ""],
+        b.pulled ? ["pulled (line moved)", "open"]
+          : !b.result && b.on_board === false ? ["open (off the board, still counts)", "open"]
+          : [b.result || "open", b.result || "open"],
+        [b.profit == null ? "" : signed(b.profit), "r " + (b.result || "")],
+      ]));
+  } else {
+    $("history").closest(".tablewrap").hidden = true;
+  }
+
+  // ---- no-money spread test
+  const P = D.paper;
+  if (!P || !P.bets.length) {
+    if (P) {
+      $("paper-sub").textContent = "The model's spread picks at early lines (ratings plus injuries) are logged here " +
+        `once next week's lines are posted (a ${P.gap}-point disagreement or more). ` +
+        "None yet.";
+      $("paper-kpis").hidden = true;
+      $("paper").closest(".tablewrap").hidden = true;
+    } else {
+      $("paper-wrap").hidden = true;
+    }
+  } else {
+    const Q = P.summary;
+    $("paper-sub").textContent = "Spreads where the team ratings plus injuries disagree with the early line " +
+      `by ${P.gap}+ points. Not staked: it earns a place in the real picks only if it beats ` +
+      "the closing line over a season.";
+    const pk = $("paper-kpis");
+    kpi(pk, String(Q.bets), "test bets logged");
+    kpi(pk, Q.wins + Q.losses ? `${Q.wins}-${Q.losses}${Q.pushes ? "-" + Q.pushes : ""}` : "—",
+        "record vs early line");
+    kpi(pk, Q.avg_clv == null ? "—" : (Q.avg_clv > 0 ? "+" : "") + Q.avg_clv.toFixed(2) + " pts",
+        "average line move our way", Q.avg_clv == null ? "" : (Q.avg_clv > 0 ? "win" : "loss"));
+    kpi(pk, Q.beat_close == null ? "—" : pct(Q.beat_close, 0), "beat the closing line");
+    const sp = (x) => (x > 0 ? "+" : "") + x;
+    table("paper", [["Date"], ["Game"], ["Test bet"], ["Model says"], ["Gap", 1],
+                    ["Close", 1], ["Moved", 1], ["Final"], ["Result"]],
+      P.bets.slice().sort((a, b) => b.commence.localeCompare(a.commence)).map((b) => {
+        const mm = b.model_margin;
+        const fav = mm >= 0 ? short(b.home) : short(b.away);
+        const sign = b.side === b.home ? 1 : -1;
+        return [
+          [new Date(b.commence).toLocaleDateString("en-US", {...ET, month: "short", day: "numeric"})],
+          [`${short(b.away)} @ ${short(b.home)}`],
+          [`${short(b.side)} ${sp(b.point)}`],
+          [`${fav} by ${Math.abs(mm).toFixed(1)}`],
+          [Math.abs(b.gap).toFixed(1), "r"],
+          [b.close == null ? "" : sp(-sign * b.close), "r"],
+          [b.clv == null ? "" : sp(b.clv), "r " + (b.clv > 0 ? "win" : b.clv < 0 ? "loss" : "")],
+          [b.final || ""], [b.result || "open", b.result || "open"],
+        ];
+      }));
+  }
+
+  if (D.fair.length) {
+    table("fair", [["Game"], ["Home by (market)", 1], ["Home by (model)", 1], ["Market total", 1],
+                   ["Model total", 1]],
+      D.fair.map((f) => [[`${short(f.away)} @ ${short(f.home)}`],
+        [(f.market_margin > 0 ? "+" : "") + f.market_margin.toFixed(1), "r"],
+        [(f.margin > 0 ? "+" : "") + f.margin.toFixed(1), "r"],
+        [f.market_total.toFixed(1), "r"], [f.total.toFixed(1), "r"]]));
+  } else {
+    $("fair").closest("details").hidden = true;
+  }
+})();
+</script>
+</body>
+</html>

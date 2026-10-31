@@ -1,0 +1,149 @@
+{
+  "updated": "Sat Oct 31, 14:27 UTC",
+  "picks": [
+    {
+      "away": "Philadelphia Eagles",
+      "home": "Washington Commanders",
+      "commence": "2026-11-02T01:20:00Z",
+      "market": "spreads",
+      "pick": "Philadelphia Eagles",
+      "point": 5.5,
+      "price": -105,
+      "book": "FanDuel",
+      "stake": 18.71,
+      "win_chance": 0.5487077534791253,
+      "ev": 0.07128656631638741,
+      "why": "The model has the Eagles losing by only 0.5, and they're getting 5.5, so they cover unless they lose by 6 or more (5.0 pts of room). Where the edge comes from: their pass defense (+3.1), their run defense (+0.7). Working against it: the Commanders' home field (1.9), Daniels at quarterback (1.3).",
+      "injuries": [
+        {
+          "team": "Eagles",
+          "name": "Jihaad Campbell",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.7
+        },
+        {
+          "team": "Eagles",
+          "name": "Dontayvion Wicks",
+          "pos": "WR",
+          "status": "Out",
+          "pts": -0.5
+        },
+        {
+          "team": "Eagles",
+          "name": "Dameon Pierce",
+          "pos": "RB",
+          "status": "IR",
+          "pts": -0.5
+        },
+        {
+          "team": "Commanders",
+          "name": "Jacory Croskey-Merritt",
+          "pos": "RB",
+          "status": "IR",
+          "pts": -0.3
+        },
+        {
+          "team": "Commanders",
+          "name": "Charles Omenihu",
+          "pos": "DE",
+          "status": "Out",
+          "pts": -0.3
+        },
+        {
+          "team": "Commanders",
+          "name": "Leo Chenal",
+          "pos": "LB",
+          "status": "IR",
+          "pts": -0.2
+        },
+        {
+          "team": "Commanders",
+          "name": "Javon Kinlaw",
+          "pos": "DT",
+          "status": "Questionable",
+          "pts": -0.2
+        },
+        {
+          "team": "Commanders",
+          "name": "Lucas Patrick",
+          "pos": "G",
+          "status": "Questionable",
+          "pts": -0.1
+        }
+      ]
+    },
+    {
+      "away": "Philadelphia Eagles",
+      "home": "Washington Commanders",
+      "commence": "2026-11-02T01:20:00Z",
+      "market": "h2h",
+      "pick": "Philadelphia Eagles",
+      "point": null,
+      "price": 215,
+      "book": "FanDuel",
+      "stake": 10.0,
+      "win_chance": 0.3545779292498975,
+      "ev": 0.11451853227882547,
+      "why": "FanDuel pays +215 on the Eagles, which needs a 32% win chance; we make it 35%. The market has them as 6.0-point underdogs; the model has them losing by only 0.5. Where the edge comes from: their pass defense (+3.1), their run defense (+0.7). Working against it: the Commanders' home field (1.9), Daniels at quarterback (1.3).",
+      "injuries": [
+        {
+          "team": "Eagles",
+          "name": "Jihaad Campbell",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.7
+        },
+        {
+          "team": "Eagles",
+          "name": "Dontayvion Wicks",
+          "pos": "WR",
+          "status": "Out",
+          "pts": -0.5
+        },
+        {
+          "team": "Eagles",
+          "name": "Dameon Pierce",
+          "pos": "RB",
+          "status": "IR",
+          "pts": -0.5
+        },
+        {
+          "team": "Commanders",
+          "name": "Jacory Croskey-Merritt",
+          "pos": "RB",
+          "status": "IR",
+          "pts": -0.3
+        },
+        {
+          "team": "Commanders",
+          "name": "Charles Omenihu",
+          "pos": "DE",
+          "status": "Out",
+          "pts": -0.3
+        },
+        {
+          "team": "Commanders",
+          "name": "Leo Chenal",
+          "pos": "LB",
+          "status": "IR",
+          "pts": -0.2
+        },
+        {
+          "team": "Commanders",
+          "name": "Javon Kinlaw",
+          "pos": "DT",
+          "status": "Questionable",
+          "pts": -0.2
+        },
+        {
+          "team": "Commanders",
+          "name": "Lucas Patrick",
+          "pos": "G",
+          "status": "Questionable",
+          "pts": -0.1
+        }
+      ]
+    }
+  ]
+}
