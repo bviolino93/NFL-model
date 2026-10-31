@@ -117,10 +117,16 @@ def report(f, priced: pd.DataFrame, bets: pd.DataFrame, ctx: dict,
                          f"{pk.BOOK_NAME.get(top.book, top.book)}, ${p.stake:,.2f}"),
                 "text": str(p.why)})
             continue
-        head = ("Pass" if top.ev < min_ev / 2
-                else f"Lean {_label(top)}, but under the bar")
-        line = (f"The best side is {_label(top)} at {top.ev * 100:+.1f}% EV; "
-                f"a bet needs {min_ev * 100:.0f}%.")
+        if top.ev >= min_ev:
+            head = f"Pass: {_label(top)} is a good price, but the model doesn't back it"
+            line = (f"The best side is {_label(top)} at {top.ev * 100:+.1f}% EV, "
+                    f"but a bet also needs the model to lean {pk.MIN_LEAN:g} "
+                    f"point its way; a better price alone isn't enough.")
+        else:
+            head = ("Pass" if top.ev < min_ev / 2
+                    else f"Lean {_label(top)}, but under the bar")
+            line = (f"The best side is {_label(top)} at {top.ev * 100:+.1f}% EV; "
+                    f"a bet needs {min_ev * 100:.0f}%.")
         if m == "totals" and "why_total" in c:
             toward = -1 if str(top.pick).lower() == "under" else 1
             line += " " + nfl_combined.explain(c["why_total"], c["x"], c["h"],

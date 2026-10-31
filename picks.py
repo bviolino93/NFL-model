@@ -164,6 +164,14 @@ COMBINED_MARKETS = {"totals"}
 RATINGS_SPREAD_WEIGHT = 0.2
 RATINGS_SPREAD_CAP = 1.0      # points; keeps win chances near the backtest
 
+# Every bet needs the model on its side (Brian, 2026-10-31: "bets that will
+# win, not just better price"): the active adjustments (ratings, combined
+# totals factors, wind, overrides) must move the fair line at least this
+# many points toward the bet. A book being off the sharp consensus no longer
+# carries a bet on its own. With the ratings capped at a point, a spread
+# needs a 5+ point ratings gap.
+MIN_LEAN = 1.0
+
 # Underdog moneylines (Brian, 2026-10-28). moneyline_research.py: nothing
 # in 2010-26 closing moneylines beats the close. Every dog loses ~2-6% (the
 # vig), dogs past +400 ~17%, and dogs our ratings like went -13% to -20% in
@@ -436,8 +444,8 @@ def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
     # validated for them; they stay visible in `priced` but are not picked.
     bettable = priced[priced["market"].isin(["spreads", "totals"])]
     bettable = bettable[bettable["book"].isin(my_books or US_BOOKS)]
-    picks = sel.select(bettable, bankroll, pol)
-    dogs = underdogs(priced[priced["book"].isin(my_books or US_BOOKS)],
+    picks = sel.select(model_backed(bettable), bankroll, pol)
+    dogs = underdogs(model_backed(priced[priced["book"].isin(my_books or US_BOOKS)]),
                      bankroll, pol)
     if len(dogs):
         picks = pd.concat([picks, dogs], ignore_index=True)
@@ -450,6 +458,22 @@ def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
         picks["injuries"] = [injuries_for(p, ctx) for p in picks.itertuples()]
         picks["book"] = picks["book"].map(lambda b: BOOK_NAME.get(b, b))
     return picks, fair, priced
+
+
+def lean(priced: pd.DataFrame) -> pd.Series:
+    """Points the active adjustments move the fair line toward each
+    offer's side (fair minus the sharp consensus, signed to the side)."""
+    toward = np.where(priced["market"] == "totals",
+                      np.where(priced["pick"].astype(str).str.lower() == "under", -1, 1),
+                      np.where(priced["pick"] == priced["home"], 1, -1))
+    return (priced["fair"] - priced["fair_market"]) * toward
+
+
+def model_backed(priced: pd.DataFrame, min_lean: float = MIN_LEAN) -> pd.DataFrame:
+    """Offers the model itself argues for by at least min_lean points."""
+    if priced.empty:
+        return priced
+    return priced[lean(priced) >= min_lean - 1e-9]
 
 
 def underdogs(priced: pd.DataFrame, bankroll: float,

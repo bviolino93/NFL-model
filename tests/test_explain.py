@@ -73,9 +73,22 @@ def test_underdogs_keeps_the_best_few_short_dogs_only():
                                            (-120, 0.06, -1.0)]):
         rows.append({"event_id": f"e{i}", "home": "H", "away": f"A{i}",
                      "market": "h2h", "pick": f"A{i}", "price": price,
-                     "ev": ev, "fair_market": fair, "kelly": 0.2,
-                     "book": "draftkings", "point": None})
+                     "ev": ev, "fair_market": fair, "fair": fair - 1.5,
+                     "kelly": 0.2, "book": "draftkings", "point": None})
     rows.append({**rows[0], "pick": "H", "price": 105, "ev": 0.3})  # favourite
-    d = picks.underdogs(pd.DataFrame(rows), 1000, sel.Policy())
+    rows.append({**rows[1], "event_id": "e9", "pick": "A9", "away": "A9",
+                 "fair": rows[1]["fair_market"] - 0.6, "ev": 0.4})  # price bet
+    d = picks.underdogs(picks.model_backed(pd.DataFrame(rows)), 1000, sel.Policy())
     assert list(d.pick) == ["A1", "A0", "A4"]
     assert (d.stake == 10.0).all()
+
+
+def test_bets_need_the_model_on_their_side():
+    import pandas as pd
+    rows = pd.DataFrame([
+        {"home": "H", "pick": "A", "market": "spreads", "fair": 2.0, "fair_market": 3.0},  # ratings cap, toward A
+        {"home": "H", "pick": "H", "market": "spreads", "fair": 3.4, "fair_market": 3.0},  # 0.4: price bet
+        {"home": "H", "pick": "Under", "market": "totals", "fair": 42.6, "fair_market": 44.0},
+        {"home": "H", "pick": "Over", "market": "totals", "fair": 42.6, "fair_market": 44.0}])
+    out = picks.model_backed(rows)
+    assert list(out.pick) == ["A", "Under"]
