@@ -101,3 +101,19 @@ def test_grade_moneyline():
     assert ledger.grade_one(b, 20, 24) == "win"
     assert ledger.grade_one(b, 24, 20) == "loss"
     assert ledger.grade_one({**b, "point": float("nan")}, 17, 17) == "push"
+
+
+def test_dropped_bet_gets_a_skip_alert_once():
+    import picks
+    early = datetime(2026, 10, 25, 13, tzinfo=timezone.utc)
+    h = ledger.merge([], [BET], early, "r1")
+    was = ledger.on_board(h)
+    h = ledger.merge(h, [], early, "r2")
+    gone = ledger.dropped(was, h, early)
+    assert len(gone) == 1
+    assert "~~Over 50.5 (-105) at DraftKings~~" in picks.render_dropped(gone)
+    # next run: already off the board, no second alert
+    assert ledger.dropped(ledger.on_board(h), ledger.merge(h, [], early, "r3"), early) == []
+    # after kickoff, nothing to skip
+    late = datetime(2026, 10, 25, 18, tzinfo=timezone.utc)
+    assert ledger.dropped(was, h, late) == []
