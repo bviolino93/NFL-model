@@ -28,6 +28,7 @@ import pandas as pd
 import requests
 
 import ledger
+import nfl_handicap
 import paper
 import nfl_combined
 import selector as sel
@@ -591,6 +592,38 @@ def render_md(picks: pd.DataFrame, made: str) -> str:
     return "\n".join(out)
 
 
+def handicap(picks, priced, ctx, books, now, bankroll, path):
+    """The handicapper's last look (nfl_handicap): every model bet needs its
+    matchup case, and its own small picks from the model's leans are added.
+    Never fails the run."""
+    state = nfl_handicap.load(path)
+    try:
+        games = load_games()
+        season = _current_season()
+        left = games[(games.season == season) & games.home_score.isna()]
+        try:
+            table = nfl_handicap.power_table(season, int(left.week.min()))
+        except Exception as exc:
+            print(f"handicap: no power table ({exc})")
+            table = None
+        kw = dict(games=games, table=table, abbr=ODDS_TEAM, now=now,
+                  injuries=lambda p: getattr(p, "injuries", None) or injuries_for(p, ctx))
+        picks = nfl_handicap.review(picks, ctx, state, **kw)
+        leans = nfl_handicap.lean_candidates(priced, ctx, books, picks, now, bankroll, lean)
+        for c in ("book", "opp_book"):
+            if c in leans:
+                leans[c] = leans[c].map(lambda b: BOOK_NAME.get(b, b))
+        leans = nfl_handicap.review(leans, ctx, state, leans=True, **kw)
+        if len(leans):
+            leans["injuries"] = [injuries_for(p, ctx) for p in leans.itertuples()]
+            picks = pd.concat([picks, leans], ignore_index=True)
+    except Exception as exc:
+        print(f"handicap skipped: {type(exc).__name__}: {exc}")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    nfl_handicap.save(path, state)
+    return picks
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="site/index.html")
@@ -603,6 +636,8 @@ def main():
     ap.add_argument("--alert", default="alert.md",
                     help="written only when this run finds bets not seen "
                          "before; the workflow posts it as a notification")
+    ap.add_argument("--handicap", default="site/handicap.json",
+                    help="handicapper review cache and monthly spend")
     ap.add_argument("--bankroll", type=float, default=1000.0)
     ap.add_argument("--min-ev", type=float, default=0.02)
     ap.add_argument("--books",
@@ -623,8 +658,10 @@ def main():
             raise SystemExit("set ODDS_API_KEY")
         rows = fetch_rows(key)
     books = [b.strip() for b in a.books.split(",") if b.strip()]
-    picks, fair, _ = build_picks(rows, books, a.bankroll, a.min_ev)
+    ctx = {}
+    picks, fair, priced = build_picks(rows, books, a.bankroll, a.min_ev, ctx_out=ctx)
     now = datetime.now(timezone.utc)
+    picks = handicap(picks, priced, ctx, books, now, a.bankroll, a.handicap)
     made = now.strftime("%a %b %-d, %H:%M UTC")
     for path in (a.out, a.json, a.md, a.history):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)

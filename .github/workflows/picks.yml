@@ -15,6 +15,11 @@ name: Picks
 # MY_BOOKS to change which books bets are placed at (default
 # "draftkings,fanduel"; every book still informs the fair line).
 # Each run costs ~6 Odds API credits (us + eu regions, 3 markets).
+#
+# Optional secret ANTHROPIC_API_KEY (the same key the college picks use):
+# the handicapper (nfl_handicap.py) reviews every bet's matchup and makes
+# small picks of its own, ~2 cents a review, stopping at $8 a month.
+# Without it bets go out unreviewed.
 
 on:
   schedule:
@@ -66,16 +71,18 @@ jobs:
           path: .cache_nflverse
           key: nflverse-picks-${{ github.run_id }}
           restore-keys: nflverse-picks-
-      - run: pip install pandas numpy pyarrow requests
+      - run: pip install pandas numpy pyarrow requests anthropic
       - name: Restore bet history from the picks branch
         run: |
           mkdir -p site
           git fetch -q --depth 1 origin picks && \
             git show FETCH_HEAD:history.json > site/history.json || true
           git show FETCH_HEAD:paper.json > site/paper.json 2>/dev/null || true
+          git show FETCH_HEAD:handicap.json > site/handicap.json 2>/dev/null || true
       - name: Run picks
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MY_BOOKS: ${{ vars.MY_BOOKS || 'draftkings,fanduel' }}
         run: |
           python picks.py --out site/index.html --json site/picks.json \
