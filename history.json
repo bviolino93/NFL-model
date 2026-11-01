@@ -1,0 +1,644 @@
+{
+  "updated": "2026-11-01T19:13:35.294276+00:00",
+  "summary": {
+    "wins": 5,
+    "losses": 2,
+    "pushes": 0,
+    "staked": 88.5,
+    "profit": 14.13,
+    "roi": 0.1597
+  },
+  "bets": [
+    {
+      "away": "Cincinnati Bengals",
+      "home": "Baltimore Ravens",
+      "commence": "2026-10-25T17:00:00Z",
+      "market": "spreads",
+      "pick": "Baltimore Ravens",
+      "point": 2.5,
+      "price": -102,
+      "book": "FanDuel",
+      "stake": 14.87,
+      "win_chance": 0.5343959731543624,
+      "ev": 0.05831359389393331,
+      "why": "The model has the Ravens winning by 2.4, and they're getting 2.5, so they cover unless they lose by 3 or more (4.9 pts of room). Where the edge comes from: home field (+2.1), their run defense (+1.0), their pass defense (+0.8), their passing game (+0.6). Working against it: Burrow at quarterback (2.1).",
+      "first_seen": "2026-10-25T14:16:40.303759+00:00",
+      "last_seen": "2026-10-25T14:23:18.119294+00:00",
+      "result": "loss",
+      "profit": -14.87,
+      "pulled": false,
+      "final": "35-13"
+    },
+    {
+      "away": "New York Giants",
+      "home": "Houston Texans",
+      "commence": "2026-10-25T17:00:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 42.5,
+      "price": -112,
+      "book": "DraftKings",
+      "stake": 14.22,
+      "win_chance": 0.5551330798479087,
+      "ev": 0.05078761542639865,
+      "why": "Both defenses are missing regulars, which has historically favored the over (1.5 pts). Both offenses are missing regulars, which has historically favored the over (0.1 pts).",
+      "first_seen": "2026-10-25T13:08:36.320628+00:00",
+      "last_seen": "2026-10-25T14:23:18.119294+00:00",
+      "result": "win",
+      "profit": 12.7,
+      "pulled": false,
+      "final": "27-21"
+    },
+    {
+      "away": "Miami Dolphins",
+      "home": "New York Jets",
+      "commence": "2026-10-25T17:00:00Z",
+      "market": "spreads",
+      "pick": "Miami Dolphins",
+      "point": 3.5,
+      "price": -105,
+      "book": "DraftKings",
+      "stake": 11.55,
+      "win_chance": 0.5347349177330896,
+      "ev": 0.04400626795507956,
+      "why": "The model has the Dolphins losing by only 1.0, and they're getting 3.5, so they cover unless they lose by 4 or more (2.5 pts of room). Where the edge comes from: their running game (+0.7), Willis over Smith at quarterback (+0.7), their passing game (+0.7). Working against it: the Jets' home field (2.1).",
+      "first_seen": "2026-10-25T14:16:40.303759+00:00",
+      "last_seen": "2026-10-25T14:23:18.119294+00:00",
+      "result": "win",
+      "profit": 11.0,
+      "pulled": false,
+      "final": "28-25"
+    },
+    {
+      "away": "Denver Broncos",
+      "home": "Arizona Cardinals",
+      "commence": "2026-10-25T20:05:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 43.5,
+      "price": -110,
+      "book": "DraftKings",
+      "stake": 9.69,
+      "win_chance": 0.5422715627668659,
+      "ev": 0.03524571073674404,
+      "why": "Both defenses are missing regulars, which has historically favored the over (0.9 pts). Both offenses are missing regulars, which has historically favored the over (0.2 pts).",
+      "first_seen": "2026-10-25T13:08:36.320628+00:00",
+      "last_seen": "2026-10-25T18:26:10.629478+00:00",
+      "result": "win",
+      "profit": 8.81,
+      "pulled": false,
+      "final": "30-16"
+    },
+    {
+      "away": "Green Bay Packers",
+      "home": "Detroit Lions",
+      "commence": "2026-10-25T20:25:00Z",
+      "market": "spreads",
+      "pick": "Green Bay Packers",
+      "point": 3.5,
+      "price": -108,
+      "book": "FanDuel",
+      "stake": 8.06,
+      "win_chance": 0.5347349177330896,
+      "ev": 0.02985984156002436,
+      "why": "The model has the Packers losing by only 1.7, and they're getting 3.5, so they cover unless they lose by 4 or more (1.8 pts of room). Where the edge comes from: their pass defense (+0.9). Working against it: the Lions' home field (2.1).",
+      "first_seen": "2026-10-25T18:13:48.818383+00:00",
+      "last_seen": "2026-10-25T18:26:10.629478+00:00",
+      "result": "win",
+      "profit": 7.46,
+      "pulled": false,
+      "final": "17-20"
+    },
+    {
+      "away": "Dallas Cowboys",
+      "home": "Philadelphia Eagles",
+      "commence": "2026-10-27T00:15:00Z",
+      "market": "spreads",
+      "pick": "Philadelphia Eagles",
+      "point": 4.5,
+      "price": -115,
+      "book": "DraftKings",
+      "stake": 20.0,
+      "win_chance": 0.5720930232558139,
+      "ev": 0.06956521739130422,
+      "why": "The model has the Eagles winning by 2.8, and they're getting 4.5, so they cover unless they lose by 5 or more (7.3 pts of room). Where the edge comes from: their pass defense (+5.5), home field (+2.1), their run defense (+1.2). Working against it: Prescott over McKee at quarterback (2.2), the Cowboys' passing game (1.8).",
+      "injuries": [
+        {
+          "team": "Cowboys",
+          "name": "Dee Winters",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.5
+        },
+        {
+          "team": "Eagles",
+          "name": "Jalen Hurts",
+          "pos": "QB",
+          "status": "IR",
+          "pts": null,
+          "note": "McKee starting"
+        },
+        {
+          "team": "Eagles",
+          "name": "Dontayvion Wicks",
+          "pos": "WR",
+          "status": "Out",
+          "pts": -0.6
+        },
+        {
+          "team": "Eagles",
+          "name": "Nolan Smith",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.6
+        },
+        {
+          "team": "Eagles",
+          "name": "Michael Carter II",
+          "pos": "CB",
+          "status": "Out",
+          "pts": -0.4
+        },
+        {
+          "team": "Eagles",
+          "name": "DeVonta Smith",
+          "pos": "WR",
+          "status": "Out",
+          "pts": -0.3
+        },
+        {
+          "team": "Eagles",
+          "name": "Jalyx Hunt",
+          "pos": "LB",
+          "status": "Questionable",
+          "pts": -0.1
+        }
+      ],
+      "first_seen": "2026-10-25T14:16:40.303759+00:00",
+      "last_seen": "2026-10-26T23:36:15.004389+00:00",
+      "result": "loss",
+      "profit": -20.0,
+      "pulled": false,
+      "final": "38-21"
+    },
+    {
+      "away": "Carolina Panthers",
+      "home": "Green Bay Packers",
+      "commence": "2026-10-30T00:15:00Z",
+      "market": "spreads",
+      "pick": "Green Bay Packers",
+      "point": -3.5,
+      "price": -112,
+      "book": "DraftKings",
+      "stake": 10.11,
+      "win_chance": 0.5473843821076573,
+      "ev": 0.0361204375609227,
+      "why": "The model has the Packers winning by 7.3, 3.8 more than the 3.5 they're giving. Where the edge comes from: their passing game (+2.5), home field (+1.9), Love over Young at quarterback (+1.7), their pass defense (+1.1).",
+      "injuries": [
+        {
+          "team": "Panthers",
+          "name": "Akayleb Evans",
+          "pos": "CB",
+          "status": "Out",
+          "pts": -0.8
+        },
+        {
+          "team": "Panthers",
+          "name": "Damien Lewis",
+          "pos": "G",
+          "status": "Out",
+          "pts": -0.5
+        },
+        {
+          "team": "Panthers",
+          "name": "Jaelan Phillips",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.4
+        },
+        {
+          "team": "Panthers",
+          "name": "Taylor Moton",
+          "pos": "OL",
+          "status": "IR",
+          "pts": -0.3
+        },
+        {
+          "team": "Packers",
+          "name": "Travis Glover",
+          "pos": "G",
+          "status": "Out",
+          "pts": -0.8
+        },
+        {
+          "team": "Packers",
+          "name": "Zaire Franklin",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.7
+        },
+        {
+          "team": "Packers",
+          "name": "Sean Rhyan",
+          "pos": "C",
+          "status": "Out",
+          "pts": -0.6
+        },
+        {
+          "team": "Packers",
+          "name": "Matthew Golden",
+          "pos": "WR",
+          "status": "Questionable",
+          "pts": -0.2
+        },
+        {
+          "team": "Packers",
+          "name": "Brenton Cox Jr.",
+          "pos": "LB",
+          "status": "Questionable",
+          "pts": -0.1
+        },
+        {
+          "team": "Packers",
+          "name": "Devonte Wyatt",
+          "pos": "DT",
+          "status": "Questionable",
+          "pts": -0.1
+        }
+      ],
+      "first_seen": "2026-10-29T21:27:39.844969+00:00",
+      "first_point": -3.5,
+      "first_price": -112,
+      "last_seen": "2026-10-29T21:27:39.844969+00:00",
+      "result": "win",
+      "profit": 9.03,
+      "pulled": false,
+      "final": "19-27"
+    },
+    {
+      "away": "Arizona Cardinals",
+      "home": "Dallas Cowboys",
+      "commence": "2026-11-01T18:00:00Z",
+      "market": "h2h",
+      "pick": "Arizona Cardinals",
+      "point": null,
+      "price": 280,
+      "book": "FanDuel",
+      "stake": 10.0,
+      "win_chance": 0.2955843290008981,
+      "ev": 0.1210691717323541,
+      "why": "FanDuel pays +280 on the Cardinals, which needs a 26% win chance; we make it 30%. The market has them as 7.5-point underdogs; the model has them losing by only 4.2. Where the edge comes from: their pass defense (+1.5), their run defense (+1.2). Working against it: Prescott over Brissett at quarterback (2.7), the Cowboys' home field (1.9). Also, the sharp books' moneylines make the Cardinals worth about +275, so FanDuel is paying more than the market thinks they are worth.",
+      "injuries": [
+        {
+          "team": "Cardinals",
+          "name": "Jalen Brooks",
+          "pos": "WR",
+          "status": "IR",
+          "pts": -0.3
+        },
+        {
+          "team": "Cowboys",
+          "name": "Dee Winters",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.5
+        }
+      ],
+      "first_seen": "2026-10-29T21:27:39.844969+00:00",
+      "first_point": null,
+      "first_price": 280,
+      "last_seen": "2026-10-29T21:27:39.844969+00:00",
+      "result": null,
+      "profit": null,
+      "pulled": false,
+      "on_board": false
+    },
+    {
+      "away": "Indianapolis Colts",
+      "home": "Jacksonville Jaguars",
+      "commence": "2026-11-01T18:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 46.5,
+      "price": -110,
+      "book": "DraftKings",
+      "stake": 10.23,
+      "win_chance": 0.543301258327165,
+      "ev": 0.0372114931700423,
+      "why": "It's a division game, which has historically favored the under (0.3 pts). 14 mph wind is forecast, which keeps scoring down (1.1 pts).",
+      "injuries": [
+        {
+          "team": "Jaguars",
+          "name": "Montaric Brown",
+          "pos": "CB",
+          "status": "Out",
+          "pts": -0.3
+        }
+      ],
+      "first_seen": "2026-10-27T03:38:41.471137+00:00",
+      "first_point": 46.5,
+      "first_price": -105,
+      "last_seen": "2026-11-01T14:24:37.299395+00:00",
+      "result": null,
+      "profit": null,
+      "pulled": false,
+      "on_board": false,
+      "now_point": 46.5,
+      "now_price": -110
+    },
+    {
+      "away": "Las Vegas Raiders",
+      "home": "New York Jets",
+      "commence": "2026-11-01T18:00:00Z",
+      "market": "spreads",
+      "pick": "Las Vegas Raiders",
+      "point": 1.5,
+      "price": -110,
+      "book": "DraftKings",
+      "stake": 6.68,
+      "win_chance": 0.5365313653136532,
+      "ev": 0.02428715196242881,
+      "why": "The model has the Raiders winning by 0.1, and they're getting 1.5, so they cover unless they lose by 2 or more (1.6 pts of room). Where the edge comes from: Cousins over Smith at quarterback (+2.5), their pass defense (+0.8). Working against it: the Jets' home field (1.9).",
+      "injuries": [
+        {
+          "team": "Raiders",
+          "name": "Quay Walker",
+          "pos": "LB",
+          "status": "Questionable",
+          "pts": -0.2
+        },
+        {
+          "team": "Jets",
+          "name": "Joseph Ossai",
+          "pos": "DE",
+          "status": "Out",
+          "pts": -0.3
+        }
+      ],
+      "first_seen": "2026-10-27T03:38:41.471137+00:00",
+      "first_point": 1.5,
+      "first_price": -120,
+      "last_seen": "2026-10-29T21:27:39.844969+00:00",
+      "result": null,
+      "profit": null,
+      "pulled": false,
+      "on_board": false
+    },
+    {
+      "away": "Atlanta Falcons",
+      "home": "Tampa Bay Buccaneers",
+      "commence": "2026-11-01T18:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 44.5,
+      "price": -112,
+      "book": "DraftKings",
+      "stake": 18.61,
+      "win_chance": 0.5634110787172011,
+      "ev": 0.06645668471470212,
+      "why": "It's a division game, which has historically favored the under (0.3 pts). 15 mph wind is forecast, which keeps scoring down (1.2 pts).",
+      "injuries": [
+        {
+          "team": "Falcons",
+          "name": "Divine Deablo",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.7
+        },
+        {
+          "team": "Falcons",
+          "name": "Billy Bowman Jr.",
+          "pos": "CB",
+          "status": "Out",
+          "pts": -0.4
+        },
+        {
+          "team": "Falcons",
+          "name": "Brian Robinson",
+          "pos": "RB",
+          "status": "Out",
+          "pts": -0.2
+        },
+        {
+          "team": "Falcons",
+          "name": "C.J. Henderson",
+          "pos": "CB",
+          "status": "Questionable",
+          "pts": -0.1
+        },
+        {
+          "team": "Falcons",
+          "name": "Avieon Terrell",
+          "pos": "CB",
+          "status": "Questionable",
+          "pts": -0.1
+        },
+        {
+          "team": "Falcons",
+          "name": "Gervon Dexter Sr.",
+          "pos": "DT",
+          "status": "Questionable",
+          "pts": -0.1
+        },
+        {
+          "team": "Buccaneers",
+          "name": "Luke Goedeke",
+          "pos": "T",
+          "status": "Out",
+          "pts": -0.8
+        },
+        {
+          "team": "Buccaneers",
+          "name": "Emeka Egbuka",
+          "pos": "WR",
+          "status": "Out",
+          "pts": -0.7
+        },
+        {
+          "team": "Buccaneers",
+          "name": "Antoine Winfield Jr.",
+          "pos": "S",
+          "status": "Out",
+          "pts": -0.5
+        }
+      ],
+      "first_seen": "2026-10-27T03:38:41.471137+00:00",
+      "first_point": 46.5,
+      "first_price": -112,
+      "last_seen": "2026-10-31T20:59:18.234336+00:00",
+      "result": null,
+      "profit": null,
+      "pulled": false,
+      "on_board": false,
+      "now_point": 43.5,
+      "now_price": -110
+    },
+    {
+      "away": "New England Patriots",
+      "home": "Miami Dolphins",
+      "commence": "2026-11-01T21:25:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 43.5,
+      "price": -112,
+      "book": "DraftKings",
+      "stake": 11.26,
+      "win_chance": 0.5495412844036698,
+      "ev": 0.040203145478374946,
+      "why": "It's a division game, which has historically favored the under (0.3 pts). 14 mph wind is forecast, which keeps scoring down (1.1 pts).",
+      "injuries": [
+        {
+          "team": "Dolphins",
+          "name": "Willie Gay Jr.",
+          "pos": "LB",
+          "status": "Questionable",
+          "pts": -0.1
+        }
+      ],
+      "first_seen": "2026-10-27T03:38:41.471137+00:00",
+      "first_point": 44.5,
+      "first_price": -110,
+      "last_seen": "2026-10-29T21:27:39.844969+00:00",
+      "result": null,
+      "profit": null,
+      "pulled": false,
+      "on_board": false
+    },
+    {
+      "away": "Philadelphia Eagles",
+      "home": "Washington Commanders",
+      "commence": "2026-11-02T01:20:00Z",
+      "market": "spreads",
+      "pick": "Philadelphia Eagles",
+      "point": 5.5,
+      "price": 100,
+      "book": "FanDuel",
+      "stake": 9.4,
+      "win_chance": 0.5188027628549501,
+      "ev": 0.03760552570990017,
+      "why": "The model has the Eagles winning by 0.6, and they're getting 5.5, so they cover unless they lose by 6 or more (6.1 pts of room). Where the edge comes from: their pass defense (+3.1), the injury report (+0.8), their run defense (+0.7). Working against it: the Commanders' home field (1.9), Daniels at quarterback (1.3).",
+      "injuries": [
+        {
+          "team": "Eagles",
+          "name": "Dameon Pierce",
+          "pos": "RB",
+          "status": "IR",
+          "pts": -0.5
+        },
+        {
+          "team": "Commanders",
+          "name": "Jacory Croskey-Merritt",
+          "pos": "RB",
+          "status": "IR",
+          "pts": -0.3
+        },
+        {
+          "team": "Commanders",
+          "name": "Charles Omenihu",
+          "pos": "DE",
+          "status": "Out",
+          "pts": -0.3
+        },
+        {
+          "team": "Commanders",
+          "name": "Leo Chenal",
+          "pos": "LB",
+          "status": "IR",
+          "pts": -0.2
+        },
+        {
+          "team": "Commanders",
+          "name": "Javon Kinlaw",
+          "pos": "DT",
+          "status": "Questionable",
+          "pts": -0.2
+        },
+        {
+          "team": "Commanders",
+          "name": "Lucas Patrick",
+          "pos": "G",
+          "status": "Questionable",
+          "pts": -0.1
+        }
+      ],
+      "first_seen": "2026-10-29T21:27:39.844969+00:00",
+      "first_point": 5.5,
+      "first_price": 100,
+      "last_seen": "2026-11-01T19:13:35.068154+00:00",
+      "result": null,
+      "profit": null,
+      "pulled": false,
+      "on_board": true,
+      "now_point": 5.5,
+      "now_price": 100
+    },
+    {
+      "away": "Philadelphia Eagles",
+      "home": "Washington Commanders",
+      "commence": "2026-11-02T01:20:00Z",
+      "market": "h2h",
+      "pick": "Philadelphia Eagles",
+      "point": null,
+      "price": 220,
+      "book": "FanDuel",
+      "stake": 4.9,
+      "win_chance": 0.3262338187527408,
+      "ev": 0.04310500780599302,
+      "why": "FanDuel pays +220 on the Eagles, which needs a 31% win chance; we make it 33%. The market has them as 6.5-point underdogs, but the model has the Eagles winning by 0.6. Where the edge comes from: their pass defense (+3.1), the injury report (+0.8), their run defense (+0.7). Working against it: the Commanders' home field (1.9), Daniels at quarterback (1.3).",
+      "injuries": [
+        {
+          "team": "Eagles",
+          "name": "Dameon Pierce",
+          "pos": "RB",
+          "status": "IR",
+          "pts": -0.5
+        },
+        {
+          "team": "Commanders",
+          "name": "Jacory Croskey-Merritt",
+          "pos": "RB",
+          "status": "IR",
+          "pts": -0.3
+        },
+        {
+          "team": "Commanders",
+          "name": "Charles Omenihu",
+          "pos": "DE",
+          "status": "Out",
+          "pts": -0.3
+        },
+        {
+          "team": "Commanders",
+          "name": "Leo Chenal",
+          "pos": "LB",
+          "status": "IR",
+          "pts": -0.2
+        },
+        {
+          "team": "Commanders",
+          "name": "Javon Kinlaw",
+          "pos": "DT",
+          "status": "Questionable",
+          "pts": -0.2
+        },
+        {
+          "team": "Commanders",
+          "name": "Lucas Patrick",
+          "pos": "G",
+          "status": "Questionable",
+          "pts": -0.1
+        }
+      ],
+      "first_seen": "2026-10-29T21:27:39.844969+00:00",
+      "first_point": null,
+      "first_price": 220,
+      "last_seen": "2026-11-01T15:23:04.085438+00:00",
+      "result": null,
+      "profit": null,
+      "pulled": false,
+      "on_board": false,
+      "now_point": null,
+      "now_price": 225
+    }
+  ]
+}
