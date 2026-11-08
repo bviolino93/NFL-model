@@ -390,10 +390,11 @@ def power_table(season: int, week: int):
     """League power ratings going into `week` (nfl_power), for the briefs."""
     from backtest import home_field_before
     from nfl_data import graded_games, load_team_games
-    from nfl_power import PowerConfig, fit_power
+    from nfl_power import fit_power
+    from paper import RATINGS_CFG
     from nfl_data import load_games
     g = load_games()
     tg = load_team_games(range(season - 1, season + 1))
     pr = fit_power(tg, season, week, home_field_before(graded_games(g), season, week),
-                   PowerConfig())
+                   RATINGS_CFG)
     return pr.table()
