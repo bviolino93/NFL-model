@@ -92,3 +92,12 @@ def test_bets_need_the_model_on_their_side():
         {"home": "H", "pick": "Over", "market": "totals", "fair": 42.6, "fair_market": 44.0}])
     out = picks.model_backed(rows)
     assert list(out.pick) == ["A", "Under"]
+
+
+def test_backup_qb_shows_up_on_both_sides():
+    m = {**M, "backup": 3.3, "margin": 3.0}      # Dallas' opponent on a backup
+    why = picks.explain_pick(_pick(pick="Dallas Cowboys", point=-0.5, fair_market=0.5),
+                             {"Dallas Cowboys": {"ratings": m}})
+    assert "Eagles starting an inexperienced backup QB (+3.3)" in why
+    why = picks.explain_pick(_pick(), {"Dallas Cowboys": {"ratings": {**M, "backup": 3.3}}})
+    assert "starting an inexperienced backup QB themselves (3.3)" in why

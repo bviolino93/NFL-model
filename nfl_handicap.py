@@ -201,7 +201,8 @@ def brief(p, ctx: dict, games: pd.DataFrame | None, table, abbr: dict,
     if m:
         lines.append(
             f"Ratings (points, home team's view): home by {m['margin']:+.1f} = ratings "
-            f"{m['ratings']:+.1f} + injuries {m['injuries']:+.1f}; pieces: home field "
+            f"{m['ratings']:+.1f} + injuries {m['injuries']:+.1f} + backup-QB penalty "
+            f"{m.get('backup', 0):+.1f}; pieces: home field "
             f"{m.get('hfa', 0):+.1f}, QB {m.get('qb', 0):+.1f}, passing {m.get('pass_off', 0):+.1f}, "
             f"rushing {m.get('run_off', 0):+.1f}, pass defense {m.get('pass_def', 0):+.1f}, run defense "
             f"{m.get('run_def', 0):+.1f}. Starting QBs: {m.get('away_qb') or 'not confirmed'} (away), "
