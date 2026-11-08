@@ -40,12 +40,20 @@ MIN_LEAD_DAYS = 3.0
 INJ_OFF_PTS = -0.78
 INJ_DEF_PTS = -0.94
 # A team starting a QB with under BACKUP_DB career dropbacks did 3.3 points
+# (with the default config)
 # worse than the ratings expected (qb_research.py: fit on 2016-20; on
 # 2021-25 it cut spread MAE 10.22 -> 10.11 and lifted the ratings' side at
 # a 3+ point gap from 51% to 54% ATS). The ridge pulls a QB with little
 # history toward the team's own level, which is mostly its starter's.
+# With this-season-only ratings (below) the same fit gives -3.9: fewer
+# games, so the ridge leans even harder on the team's starter-led level.
 BACKUP_DB = 150
-BACKUP_PTS = -3.3
+BACKUP_PTS = -3.9
+# Ratings from this season's games only (Brian, 2026-11-08: "Rating should
+# be totally based on this year"). qb_research.py found this worse than the
+# default carry-over (3+ point gaps 47% vs 51% ATS, 2016-25); he chose it
+# anyway. PowerConfig() restores the carry-over.
+RATINGS_CFG = PowerConfig(offseason_weeks=10_000.0)
 
 
 def load(path: str) -> list[dict]:
@@ -93,7 +101,7 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
     past = past.assign(spread_line=past.spread_line.fillna(0),
                        total_line=past.total_line.fillna(44))
     tg = load_team_games(range(season - 5, season + 1))
-    fr = calibrate(project(tg, past, seasons, PowerConfig()))
+    fr = calibrate(project(tg, past, seasons, RATINGS_CFG))
     fr = fr[fr.game_id.isin(want)]
     dropbacks = tg.dropna(subset=["qb_id"]).groupby("qb_id")["n_db"].sum()
     listed = load_games().set_index("game_id")[["home_qb_id", "away_qb_id"]]
@@ -141,7 +149,7 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
     except Exception:
         status = {}
 
-    cfg = PowerConfig()
+    cfg = RATINGS_CFG
     fits = {}
     out = {}
     for r in fr.itertuples():
