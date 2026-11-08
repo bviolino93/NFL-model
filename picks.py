@@ -176,6 +176,10 @@ MIN_LEAN = 1.0
 # Half stakes until the picks show they beat closing lines (Brian,
 # 2026-10-31, after a 2-6 start in college): every stake, dogs included.
 STAKE_SCALE = 0.5
+# Spreads at half the totals' stake (Brian, 2026-11-08: "lean into
+# totals"): totals have held up walk-forward, spreads haven't beaten the
+# close. Raise this once the weekly review shows spreads with positive CLV.
+SPREAD_STAKE_SCALE = 0.5
 
 # Underdog moneylines (Brian, 2026-10-28). moneyline_research.py: nothing
 # in 2010-26 closing moneylines beats the close. Every dog loses ~2-6% (the
@@ -248,6 +252,9 @@ def _matchup(p, m: dict) -> list[str]:
     inj = side * m["injuries"]
     if inj >= 0.5:
         parts.append((inj, f"the injury report (+{inj:.1f})"))
+    bk = side * m.get("backup", 0.0)
+    if bk >= 0.5:
+        parts.append((bk, f"the {opp} starting an inexperienced backup QB (+{bk:.1f})"))
     parts.sort(reverse=True)
     why = []
     if parts:
@@ -268,6 +275,8 @@ def _matchup(p, m: dict) -> list[str]:
                    for k, v in cons.items() if -side * m[k] >= 1.0]
     if -inj >= 1.0:
         against.append((-inj, "the injury report"))
+    if -bk >= 1.0:
+        against.append((-bk, "starting an inexperienced backup QB themselves"))
     if against:
         against.sort(reverse=True)
         why.append("Working against it: " + ", ".join(
@@ -463,7 +472,9 @@ def build_picks(rows: pd.DataFrame, my_books=None, bankroll: float = 1000.0,
         picks["point"] = picks["point"].astype(object).where(
             picks["market"] != "h2h", None)
     if len(picks):
-        picks["stake"] = (picks["stake"] * STAKE_SCALE).round(2)
+        picks["stake"] = (picks["stake"] * STAKE_SCALE
+                          * np.where(picks["market"] == "spreads", SPREAD_STAKE_SCALE, 1.0)
+                          ).round(2)
         picks["win_chance"] = picks["p_win"] / (1 - picks["p_push"])
         picks["why"] = [explain_pick(p, ctx) for p in picks.itertuples()]
         picks["injuries"] = [injuries_for(p, ctx) for p in picks.itertuples()]

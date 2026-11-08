@@ -39,6 +39,13 @@ MIN_LEAD_DAYS = 3.0
 # prices most of it; early lines may not have it yet.
 INJ_OFF_PTS = -0.78
 INJ_DEF_PTS = -0.94
+# A team starting a QB with under BACKUP_DB career dropbacks did 3.3 points
+# worse than the ratings expected (qb_research.py: fit on 2016-20; on
+# 2021-25 it cut spread MAE 10.22 -> 10.11 and lifted the ratings' side at
+# a 3+ point gap from 51% to 54% ATS). The ridge pulls a QB with little
+# history toward the team's own level, which is mostly its starter's.
+BACKUP_DB = 150
+BACKUP_PTS = -3.3
 
 
 def load(path: str) -> list[dict]:
@@ -88,6 +95,17 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
     tg = load_team_games(range(season - 5, season + 1))
     fr = calibrate(project(tg, past, seasons, PowerConfig()))
     fr = fr[fr.game_id.isin(want)]
+    dropbacks = tg.dropna(subset=["qb_id"]).groupby("qb_id")["n_db"].sum()
+    listed = load_games().set_index("game_id")[["home_qb_id", "away_qb_id"]]
+
+    def backup(game_id, side, qb):
+        """Is this side starting a barely-played QB? A listed starter that
+        fix_starters blanked (out, no active recent starter) counts too."""
+        if isinstance(qb, str):
+            return float(dropbacks.get(qb, 0.0)) < BACKUP_DB
+        was = listed[f"{side}_qb_id"].get(game_id)
+        return isinstance(was, str)
+
     try:
         from nfl_combined import injury_loads
         L = injury_loads([season], include_ir=True).sort_values("week")
@@ -130,8 +148,12 @@ def model_margins(fair: dict, abbr: dict[str, str]) -> dict[str, dict]:
         ho, hd = load_for(r.home, r.week)
         ao, ad = load_for(r.away, r.week)
         inj = INJ_OFF_PTS * (ho - ao) + INJ_DEF_PTS * (hd - ad)
+        g0 = games[games.game_id == r.game_id].iloc[0]
+        bk = BACKUP_PTS * (backup(r.game_id, "home", g0.home_qb_id)
+                           - backup(r.game_id, "away", g0.away_qb_id))
         row = {"ratings": float(r.model_margin), "injuries": float(inj),
-               "margin": float(r.model_margin + inj),
+               "backup": float(bk),
+               "margin": float(r.model_margin + inj + bk),
                "injured": {"home": players_for(r.home, r.week),
                            "away": players_for(r.away, r.week)}}
         try:
