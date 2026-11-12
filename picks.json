@@ -1,0 +1,79 @@
+{
+  "updated": "Thu Nov 12, 18:49 UTC",
+  "picks": [
+    {
+      "away": "Seattle Seahawks",
+      "home": "Las Vegas Raiders",
+      "commence": "2026-11-15T21:05:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 40.5,
+      "price": -108,
+      "book": "DraftKings",
+      "stake": 3.65,
+      "win_chance": 0.5332681017612524,
+      "ev": 0.027034862651300895,
+      "why": "There's a quarterback change in this game, which has historically favored the under (1.0 pts).",
+      "injuries": [
+        {
+          "team": "Seahawks",
+          "name": "Drew Lock",
+          "pos": "QB",
+          "status": "Benched",
+          "pts": null,
+          "note": "Darnold starting"
+        },
+        {
+          "team": "Seahawks",
+          "name": "Leonard Williams",
+          "pos": "DT",
+          "status": "Out",
+          "pts": -0.7
+        },
+        {
+          "team": "Seahawks",
+          "name": "Charles Cross",
+          "pos": "T",
+          "status": "Out",
+          "pts": -0.6
+        },
+        {
+          "team": "Seahawks",
+          "name": "Uchenna Nwosu",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.4
+        },
+        {
+          "team": "Seahawks",
+          "name": "Rashid Shaheed",
+          "pos": "WR",
+          "status": "Out",
+          "pts": -0.2
+        },
+        {
+          "team": "Raiders",
+          "name": "Kirk Cousins",
+          "pos": "QB",
+          "status": "Benched",
+          "pts": null,
+          "note": "Mendoza starting"
+        },
+        {
+          "team": "Raiders",
+          "name": "Thomas Booker",
+          "pos": "DT",
+          "status": "Out",
+          "pts": -0.3
+        },
+        {
+          "team": "Raiders",
+          "name": "Darien Porter",
+          "pos": "CB",
+          "status": "Questionable",
+          "pts": -0.1
+        }
+      ]
+    }
+  ]
+}
