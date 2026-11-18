@@ -16,10 +16,9 @@ name: Picks
 # "draftkings,fanduel"; every book still informs the fair line).
 # Each run costs ~6 Odds API credits (us + eu regions, 3 markets).
 #
-# Optional secret ANTHROPIC_API_KEY (the same key the college picks use):
-# the handicapper (nfl_handicap.py) reviews every bet's matchup and makes
-# small picks of its own, ~2 cents a review, stopping at $8 a month.
-# Without it bets go out unreviewed.
+# Claude API usage is OFF (2026-11-18, cost): the handicapper
+# (nfl_handicap.py) is skipped and bets come from the plain model. To turn
+# it back on, set USE_CLAUDE_API: "1" and pass ANTHROPIC_API_KEY below.
 
 on:
   schedule:
@@ -91,7 +90,7 @@ jobs:
           path: .cache_nflverse
           key: nflverse-picks-${{ github.run_id }}
           restore-keys: nflverse-picks-
-      - run: pip install pandas numpy pyarrow requests anthropic
+      - run: pip install pandas numpy pyarrow requests
       - name: Restore bet history from the picks branch
         run: |
           mkdir -p site
@@ -102,7 +101,7 @@ jobs:
       - name: Run picks
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          USE_CLAUDE_API: "0"
           MY_BOOKS: ${{ vars.MY_BOOKS || 'draftkings,fanduel' }}
         run: |
           python picks.py --out site/index.html --json site/picks.json \

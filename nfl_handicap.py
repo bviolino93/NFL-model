@@ -23,8 +23,12 @@ its line, price or news changes. Spend stops for the month at
 MONTHLY_BUDGET (college stops at $40; Brian's API ceiling is $50).
 
 Unbacktested: nobody has shown judgment calls like this beat the close, so
-the weekly closing-line review is the judge. HANDICAP = False turns it off;
-without the ANTHROPIC_API_KEY secret bets go out unreviewed, as before.
+the weekly closing-line review is the judge.
+
+OFF since 2026-11-18 (Brian shut off all Claude API usage for cost): HANDICAP
+is False unless the environment sets USE_CLAUDE_API=1, and the workflow no
+longer passes ANTHROPIC_API_KEY. Off, bets go out unreviewed (plain model)
+and no handicapper leans are added. Nothing calls the API.
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ import re
 import numpy as np
 import pandas as pd
 
-HANDICAP = True
+HANDICAP = os.environ.get("USE_CLAUDE_API", "0") == "1"
 MODEL = "claude-sonnet-5-5"
 EFFORT = "low"
 MONTHLY_BUDGET = 8.0
