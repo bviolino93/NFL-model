@@ -2,7 +2,32 @@ from types import SimpleNamespace as N
 
 import pandas as pd
 
+import importlib
+
+import pytest
+
 import nfl_handicap as H
+
+
+@pytest.fixture(autouse=True)
+def _handicap_on(monkeypatch):
+    monkeypatch.setattr(H, "HANDICAP", True)
+
+
+def test_api_off_by_default(monkeypatch):
+    monkeypatch.delenv("USE_CLAUDE_API", raising=False)
+    assert importlib.reload(H).HANDICAP is False
+    monkeypatch.setattr(H, "HANDICAP", False)
+    called = []
+    class Boom:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                called.append(1)
+    assert len(H.review(_picks(), {}, {}, client=Boom(), now="2026-11-01T15:00Z")) == 1
+    assert H.review(_picks(), {}, {}, client=Boom(), leans=True,
+                    now="2026-11-01T15:00Z").empty
+    assert not called
 
 
 class Fake:
