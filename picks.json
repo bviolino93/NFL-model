@@ -1,0 +1,80 @@
+{
+  "updated": "Thu Nov 19, 18:49 UTC",
+  "picks": [
+    {
+      "away": "New York Jets",
+      "home": "Los Angeles Chargers",
+      "commence": "2026-11-22T21:05:00Z",
+      "market": "spreads",
+      "pick": "New York Jets",
+      "point": 3.0,
+      "price": -106,
+      "book": "DraftKings",
+      "stake": 5.0,
+      "win_chance": 0.5616197183098591,
+      "ev": 0.0876681792850888,
+      "why": "The model has the Jets winning by 3.0, and they're getting 3, so they cover unless they lose by more than 3 (6.0 pts of room). Where the edge comes from: Smith over Herbert at quarterback (+3.1), their passing game (+2.5), their running game (+0.9), their run defense (+0.5). Working against it: the Chargers' home field (1.8), the Chargers' pass defense (1.8).",
+      "injuries": [
+        {
+          "team": "Jets",
+          "name": "Omar Cooper Jr.",
+          "pos": "WR",
+          "status": "Questionable",
+          "pts": -0.2
+        },
+        {
+          "team": "Jets",
+          "name": "Harrison Phillips",
+          "pos": "DT",
+          "status": "Questionable",
+          "pts": -0.1
+        },
+        {
+          "team": "Jets",
+          "name": "Garrett Wilson",
+          "pos": "WR",
+          "status": "Questionable",
+          "pts": -0.1
+        }
+      ]
+    },
+    {
+      "away": "Pittsburgh Steelers",
+      "home": "Philadelphia Eagles",
+      "commence": "2026-11-22T18:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 37.5,
+      "price": -105,
+      "book": "FanDuel",
+      "stake": 5.62,
+      "win_chance": 0.5341440598690365,
+      "ev": 0.04285268831573785,
+      "why": "13 mph wind is forecast, which keeps scoring down (1.0 pts).",
+      "injuries": [
+        {
+          "team": "Eagles",
+          "name": "Jalen Hurts",
+          "pos": "QB",
+          "status": "IR",
+          "pts": null,
+          "note": "III starting"
+        },
+        {
+          "team": "Eagles",
+          "name": "Jihaad Campbell",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.5
+        },
+        {
+          "team": "Eagles",
+          "name": "Dontayvion Wicks",
+          "pos": "WR",
+          "status": "Out",
+          "pts": -0.3
+        }
+      ]
+    }
+  ]
+}
