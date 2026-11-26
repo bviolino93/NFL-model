@@ -1,0 +1,222 @@
+{
+  "updated": "Thu Nov 26, 18:48 UTC",
+  "picks": [
+    {
+      "away": "Washington Commanders",
+      "home": "Arizona Cardinals",
+      "commence": "2026-11-29T21:25:00Z",
+      "market": "spreads",
+      "pick": "Arizona Cardinals",
+      "point": 6.5,
+      "price": -102,
+      "book": "DraftKings",
+      "stake": 4.05,
+      "win_chance": 0.5370370370370371,
+      "ev": 0.06354393609295583,
+      "why": "The model has the Cardinals losing by only 1.1, and they're getting 6.5, so they cover unless they lose by 7 or more (5.4 pts of room). Where the edge comes from: home field (+1.9). Working against it: the Commanders' pass defense (2.5), the Commanders' passing game (1.1).",
+      "injuries": [
+        {
+          "team": "Commanders",
+          "name": "Amik Robertson",
+          "pos": "CB",
+          "status": "Questionable",
+          "pts": -0.2
+        },
+        {
+          "team": "Commanders",
+          "name": "Lucas Patrick",
+          "pos": "C",
+          "status": "Questionable",
+          "pts": -0.1
+        },
+        {
+          "team": "Commanders",
+          "name": "Rachaad White",
+          "pos": "RB",
+          "status": "Questionable",
+          "pts": -0.1
+        },
+        {
+          "team": "Cardinals",
+          "name": "Jacoby Brissett",
+          "pos": "QB",
+          "status": "Benched",
+          "pts": null,
+          "note": "Johnson starting"
+        },
+        {
+          "team": "Cardinals",
+          "name": "Andrew Wingard",
+          "pos": "DB",
+          "status": "IR",
+          "pts": -0.7
+        },
+        {
+          "team": "Cardinals",
+          "name": "Michael Wilson",
+          "pos": "WR",
+          "status": "IR",
+          "pts": -0.3
+        }
+      ]
+    },
+    {
+      "away": "Seattle Seahawks",
+      "home": "San Francisco 49ers",
+      "commence": "2026-11-29T21:25:00Z",
+      "market": "spreads",
+      "pick": "San Francisco 49ers",
+      "point": -3.0,
+      "price": -103,
+      "book": "DraftKings",
+      "stake": 3.08,
+      "win_chance": 0.533061224489796,
+      "ev": 0.047787650365668344,
+      "why": "The model has the 49ers winning by 8.6, 5.6 more than the 3 they're giving. Where the edge comes from: Purdy over Darnold at quarterback (+4.2), their passing game (+2.6), home field (+1.9), their running game (+1.7). Working against it: the Seahawks' pass defense (1.8).",
+      "injuries": [
+        {
+          "team": "Seahawks",
+          "name": "Drew Lock",
+          "pos": "QB",
+          "status": "Benched",
+          "pts": null,
+          "note": "Darnold starting"
+        },
+        {
+          "team": "Seahawks",
+          "name": "Leonard Williams",
+          "pos": "DT",
+          "status": "Out",
+          "pts": -0.5
+        },
+        {
+          "team": "Seahawks",
+          "name": "Charles Cross",
+          "pos": "T",
+          "status": "Out",
+          "pts": -0.4
+        },
+        {
+          "team": "49ers",
+          "name": "Colton McKivitz",
+          "pos": "OL",
+          "status": "IR",
+          "pts": -0.6
+        }
+      ]
+    },
+    {
+      "away": "Tennessee Titans",
+      "home": "Jacksonville Jaguars",
+      "commence": "2026-11-29T18:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 49.5,
+      "price": -110,
+      "book": "FanDuel",
+      "stake": 4.3,
+      "win_chance": 0.5401750198886237,
+      "ev": 0.031243219787372545,
+      "why": "It's a division game, which has historically favored the under (0.3 pts). 9 mph wind is forecast, which keeps scoring down (0.7 pts).",
+      "injuries": [
+        {
+          "team": "Jaguars",
+          "name": "Robert Hainsey",
+          "pos": "C",
+          "status": "Out",
+          "pts": -0.7
+        }
+      ]
+    },
+    {
+      "away": "Las Vegas Raiders",
+      "home": "Cleveland Browns",
+      "commence": "2026-11-30T01:20:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 40.5,
+      "price": -115,
+      "book": "FanDuel",
+      "stake": 4.33,
+      "win_chance": 0.5510009532888465,
+      "ev": 0.030132217018278173,
+      "why": "14 mph wind is forecast, which keeps scoring down (1.1 pts).",
+      "injuries": [
+        {
+          "team": "Raiders",
+          "name": "Kirk Cousins",
+          "pos": "QB",
+          "status": "Benched",
+          "pts": null,
+          "note": "Mendoza starting"
+        },
+        {
+          "team": "Raiders",
+          "name": "Tonka Hemingway",
+          "pos": "DT",
+          "status": "Out",
+          "pts": -0.4
+        },
+        {
+          "team": "Raiders",
+          "name": "Brock Bowers",
+          "pos": "TE",
+          "status": "Questionable",
+          "pts": -0.1
+        },
+        {
+          "team": "Browns",
+          "name": "Ronnie Hickman Jr.",
+          "pos": "S",
+          "status": "Out",
+          "pts": -0.9
+        },
+        {
+          "team": "Browns",
+          "name": "Denzel Boston",
+          "pos": "WR",
+          "status": "Questionable",
+          "pts": -0.2
+        }
+      ]
+    },
+    {
+      "away": "Seattle Seahawks",
+      "home": "San Francisco 49ers",
+      "commence": "2026-11-29T21:25:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 43.5,
+      "price": -103,
+      "book": "DraftKings",
+      "stake": 3.78,
+      "win_chance": 0.5222876366694702,
+      "ev": 0.029363012076722872,
+      "why": "It's a division game, which has historically favored the under (0.3 pts). 10 mph wind is forecast, which keeps scoring down (0.8 pts).",
+      "injuries": [
+        {
+          "team": "Seahawks",
+          "name": "Drew Lock",
+          "pos": "QB",
+          "status": "Benched",
+          "pts": null,
+          "note": "Darnold starting"
+        },
+        {
+          "team": "Seahawks",
+          "name": "Leonard Williams",
+          "pos": "DT",
+          "status": "Out",
+          "pts": -0.5
+        },
+        {
+          "team": "Seahawks",
+          "name": "Charles Cross",
+          "pos": "T",
+          "status": "Out",
+          "pts": -0.4
+        }
+      ]
+    }
+  ]
+}
